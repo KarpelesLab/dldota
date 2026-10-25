@@ -1,5 +1,10 @@
 # dldota
 
+[![CI](https://github.com/KarpelesLab/dldota/actions/workflows/ci.yml/badge.svg)](https://github.com/KarpelesLab/dldota/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/dldota.svg)](https://crates.io/crates/dldota)
+[![docs.rs](https://img.shields.io/docsrs/dldota)](https://docs.rs/dldota)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Load the system's shared libraries from a **statically linked** program.
 
 dldota maps the system's own dynamic loader (`ld-linux-*.so`, `ld-musl-*.so`)

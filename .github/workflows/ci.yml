@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# A newer push to the same branch (or PR) supersedes this run: cancel the
+# older one instead of queueing every intermediate commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test & lint (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux only: dldota boots the system's ELF dynamic loader.
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      - name: Format
+        if: matrix.os == 'ubuntu-latest' # formatting is platform-independent
+        run: cargo fmt --all --check
+
+      - name: Clippy (all features, warnings denied)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test (all features)
+        run: cargo test --all-features
+
+  static:
+    name: Static library (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build libdldota.a
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Check exported C symbols
+        run: |
+          nm -g --defined-only target/${{ matrix.target }}/release/libdldota.a 2>/dev/null \
+            | grep -E ' T dldota_' | tee /dev/stderr \
+            | grep -c ' T dldota_' | grep -qx 6
+
+  msrv:
+    name: MSRV (1.95)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@1.95
+
+      - name: Check
+        run: cargo check --all-targets

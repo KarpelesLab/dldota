@@ -5,8 +5,14 @@ edition = "2024"
 rust-version = "1.95"
 description = "Load shared libraries from statically linked programs by bootstrapping the system's own dynamic loader"
 authors = ["Mark Karpeles <magicaltux@gmail.com>"]
+repository = "https://github.com/KarpelesLab/dldota"
+license = "MIT"
 keywords = ["dlopen", "static", "elf", "ld-so", "ffi"]
 categories = ["os::linux-apis", "external-ffi-bindings"]
+
+[package.metadata.docs.rs]
+# Linux-only crate: skip docs.rs's default non-Linux targets.
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 
 [lib]
 # rlib for Rust consumers, staticlib (libdldota.a) for C consumers.
