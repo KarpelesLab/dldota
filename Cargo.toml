@@ -1,0 +1,20 @@
+[package]
+name = "dldota"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Load shared libraries from statically linked programs by bootstrapping the system's own dynamic loader"
+authors = ["Mark Karpeles <magicaltux@gmail.com>"]
+keywords = ["dlopen", "static", "elf", "ld-so", "ffi"]
+categories = ["os::linux-apis", "external-ffi-bindings"]
+
+[lib]
+# rlib for Rust consumers, staticlib (libdldota.a) for C consumers.
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
