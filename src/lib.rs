@@ -27,5 +27,5 @@ mod error;
 pub mod ffi;
 mod loader;
 
-pub use context::{Context, ContextBuilder, Library, OpenFlags, Symbol};
+pub use context::{Callback, Context, ContextBuilder, Library, OpenFlags, Symbol};
 pub use error::{Error, Result};

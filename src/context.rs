@@ -83,6 +83,46 @@ impl Context {
         Ok(Library { ctx: self, handle })
     }
 
+    /// The foreign global scope (`dlopen(NULL)`): the system libc and anything
+    /// opened with [`OpenFlags::GLOBAL`]. Use it to reach libc functions
+    /// without knowing the libc's file name, which differs between glibc and musl.
+    pub fn global(&self) -> Result<Library<'_>> {
+        let handle = self.open_raw(None, OpenFlags::LAZY)?;
+        Ok(Library { ctx: self, handle })
+    }
+
+    /// Wrap a host function so foreign code can call it, e.g. as a `qsort`
+    /// comparator. The returned pointer switches the thread pointer back to the
+    /// host for the duration of the call; it is valid while the
+    /// [`Callback`] lives.
+    ///
+    /// # Safety
+    /// `F` must be an `extern "C" fn` pointer type.
+    pub unsafe fn callback<F: Copy>(&self, f: F) -> Result<Callback<'_, F>> {
+        const { assert!(size_of::<F>() == size_of::<*mut c_void>()) };
+        // SAFETY: size checked above; F is a function pointer per the contract.
+        let raw = unsafe { std::mem::transmute_copy::<F, NonNull<c_void>>(&f) };
+        let thunk = self.callback_raw(raw)?;
+        // SAFETY: the thunk has the same ABI and signature as `f`.
+        let thunk_fn = unsafe { std::mem::transmute_copy::<NonNull<c_void>, F>(&thunk) };
+        Ok(Callback {
+            ctx: self,
+            thunk,
+            thunk_fn,
+        })
+    }
+
+    /// Create a callback thunk for the raw host function `f`.
+    pub fn callback_raw(&self, f: NonNull<c_void>) -> Result<NonNull<c_void>> {
+        let _ = f;
+        Err(Error::Unimplemented("callbacks"))
+    }
+
+    /// Release a thunk created by [`Context::callback_raw`].
+    pub fn free_callback_raw(&self, thunk: NonNull<c_void>) {
+        let _ = thunk;
+    }
+
     /// `dlopen` returning the raw foreign handle; `None` opens the global scope.
     pub fn open_raw(&self, name: Option<&CStr>, flags: OpenFlags) -> Result<NonNull<c_void>> {
         let _ = (name, flags);
@@ -154,3 +194,28 @@ impl<T> Deref for Symbol<'_, T> {
         &self.value
     }
 }
+
+/// A host function made callable from foreign code by [`Context::callback`].
+/// Derefs to the thunk, to be passed to foreign code.
+pub struct Callback<'ctx, F> {
+    ctx: &'ctx Context,
+    thunk: NonNull<c_void>,
+    thunk_fn: F,
+}
+
+impl<F> Deref for Callback<'_, F> {
+    type Target = F;
+    fn deref(&self) -> &F {
+        &self.thunk_fn
+    }
+}
+
+impl<F> Drop for Callback<'_, F> {
+    fn drop(&mut self) {
+        self.ctx.free_callback_raw(self.thunk);
+    }
+}
+
+// SAFETY: the thunk is immutable code owned by the context.
+unsafe impl<F: Send> Send for Callback<'_, F> {}
+unsafe impl<F: Sync> Sync for Callback<'_, F> {}

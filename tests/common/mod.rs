@@ -14,6 +14,11 @@ pub fn open<'ctx>(ctx: &'ctx Context, name: &CStr) -> Library<'ctx> {
         .unwrap_or_else(|e| panic!("open {name:?}: {e}"))
 }
 
+/// The foreign global scope, where the system libc's own symbols live.
+pub fn global(ctx: &Context) -> Library<'_> {
+    ctx.global().expect("dlopen(NULL)")
+}
+
 /// Look up `name` as a function pointer of type `T`.
 ///
 /// # Safety

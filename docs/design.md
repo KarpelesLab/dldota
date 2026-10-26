@@ -112,7 +112,8 @@ switch TP**, in both directions:
   (host TLS reached at a fixed TP offset, since static executables use the
   local-exec TLS model), swaps TP, calls, and swaps back.
 - **Inbound** callbacks (foreign → host, e.g. `qsort` comparators, Vulkan
-  debug callbacks): the mirror-image thunk, created by `Context::callback()`.
+  debug callbacks): the mirror-image thunk, created by `Context::callback()`
+  (`dldota_callback()` in C).
 - **Cost:** `arch_prctl` is a syscall. With FSGSBASE (`AT_HWCAP2` bit 1, Linux
   5.9+), `wrfsbase` is a single instruction. On aarch64, `msr tpidr_el0` is
   cheap.
@@ -124,7 +125,9 @@ Using it concurrently from several host threads corrupts glibc state (errno,
 tcache, `dlerror`, locale). Options:
 
 - **(MVP)** a per-context lock: one host thread inside foreign code at a time,
-  all of them borrowing the bootstrap TCB.
+  all of them borrowing the bootstrap TCB. The lock must be re-entrant,
+  because a callback can call back into foreign code (host → foreign → host →
+  foreign, see `tests/callbacks.rs`).
 - **(Later)** a foreign TCB per host thread. Lazily `pthread_create` a parked
   foreign thread through the *foreign* libc and borrow its TCB. Caveat: the TCB's
   `tid` is the parked thread's, which matters for PI/robust mutexes only.

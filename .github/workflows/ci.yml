@@ -78,7 +78,7 @@ jobs:
         run: |
           nm -g --defined-only target/${{ matrix.target }}/release/libdldota.a 2>/dev/null \
             | grep -E ' T dldota_' | tee /dev/stderr \
-            | grep -c ' T dldota_' | grep -qx 6
+            | grep -c ' T dldota_' | grep -qx 8
 
   fullrust:
     # The tests built as fully static, libc-free binaries with fullrust

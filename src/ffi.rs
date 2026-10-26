@@ -118,6 +118,34 @@ pub unsafe extern "C" fn dldota_close(ctx: *mut DldotaCtx, handle: *mut c_void) 
     }
 }
 
+/// Wrap the host function `func` so foreign code can call it (e.g. as a
+/// `qsort` comparator); pass the returned pointer to foreign code instead of
+/// `func`. Returns NULL on failure.
+///
+/// # Safety
+/// `ctx` must be valid and `func` an `extern "C"` function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dldota_callback(ctx: *mut DldotaCtx, func: *mut c_void) -> *mut c_void {
+    let Some(func) = NonNull::new(func) else {
+        set_error(Error::Dl("NULL function".into()));
+        return ptr::null_mut();
+    };
+    // SAFETY: caller contract.
+    ok_or_null(unsafe { &*ctx }.callback_raw(func))
+}
+
+/// Release a thunk from `dldota_callback`. Foreign code must no longer hold it.
+///
+/// # Safety
+/// `ctx` must be valid and `thunk` from `dldota_callback`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dldota_callback_free(ctx: *mut DldotaCtx, thunk: *mut c_void) {
+    if let Some(thunk) = NonNull::new(thunk) {
+        // SAFETY: caller contract.
+        unsafe { &*ctx }.free_callback_raw(thunk);
+    }
+}
+
 /// Last error on this thread, or NULL. Like `dlerror`, reading clears it; the
 /// string stays valid until the next dldota call on this thread.
 #[unsafe(no_mangle)]
