@@ -80,6 +80,18 @@ jobs:
             | grep -E ' T dldota_' | tee /dev/stderr \
             | grep -c ' T dldota_' | grep -qx 6
 
+  fullrust:
+    # The tests built as fully static, libc-free binaries with fullrust
+    # (https://github.com/KarpelesLab/fullrust), then run against the runner's
+    # glibc loader and Alpine's musl loader.
+    name: fullrust static host (glibc + musl loaders)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build with fullrust and run the tests
+        run: scripts/fullrust-tests.sh
+
   msrv:
     name: MSRV (1.95)
     runs-on: ubuntu-latest

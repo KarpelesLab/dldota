@@ -17,7 +17,8 @@
 //! let version = unsafe { libz.symbol::<unsafe extern "C" fn() -> *const core::ffi::c_char>(c"zlibVersion")? };
 //! ```
 
-#[cfg(not(target_os = "linux"))]
+// fullrust (libc-free static Rust) is Linux underneath but reports its own OS.
+#[cfg(not(any(target_os = "linux", target_os = "fullrust")))]
 compile_error!("dldota only supports Linux");
 
 mod arch;

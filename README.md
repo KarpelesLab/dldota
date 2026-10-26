@@ -19,4 +19,8 @@ Status: scaffolding. See [docs/design.md](docs/design.md).
   `cargo build --release --target x86_64-unknown-linux-musl`, or the `-gnu`
   target when linking into a static glibc program)
 
+Tests also run from a fully static, libc-free host built with
+[fullrust](https://github.com/KarpelesLab/fullrust), against both glibc and
+musl system loaders: `scripts/fullrust-tests.sh`.
+
 Supported: Linux on x86_64 and aarch64. MSRV 1.95.

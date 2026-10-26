@@ -20,6 +20,10 @@ crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 
+[lints.rust]
+# fullrust (libc-free static Rust) reports target_os = "fullrust".
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("fullrust"))'] }
+
 [profile.release]
 panic = "abort"
 lto = true
