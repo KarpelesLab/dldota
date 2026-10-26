@@ -31,11 +31,18 @@ fi
 mapfile -t bins < <(jq -r 'select(.reason == "compiler-artifact" and .profile.test) | .executable // empty' <<<"$json" | "${map[@]}")
 [ ${#bins[@]} -gt 0 ] || { echo "no test binaries built" >&2; exit 1; }
 
+# Alpine with the libraries the tests load (zlib is in the base image).
+alpine_test_image=dldota-test-alpine
+docker build -q -t "$alpine_test_image" - >/dev/null <<DOCKERFILE
+FROM $ALPINE_IMAGE
+RUN apk add --no-cache zlib zstd-libs
+DOCKERFILE
+
 status=0
 for bin in "${bins[@]}"; do
     echo "=== $(basename "$bin") on host ($(sed -n 's/^PRETTY_NAME=//p' /etc/os-release))"
     "$bin" "$@" || status=1
     echo "=== $(basename "$bin") on $ALPINE_IMAGE"
-    docker run --rm -v "$target_dir":"$target_dir":ro "$ALPINE_IMAGE" "$bin" "$@" || status=1
+    docker run --rm -v "$target_dir":"$target_dir":ro "$alpine_test_image" "$bin" "$@" || status=1
 done
 exit $status

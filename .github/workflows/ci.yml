@@ -89,8 +89,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Check the libraries the tests load
+        run: dpkg -s zlib1g libzstd1 | grep -E '^(Package|Version):'
+
       - name: Build with fullrust and run the tests
         run: scripts/fullrust-tests.sh
+
+      # Tests ignored until the loader bootstrap lands. Non-blocking, so their
+      # progress is visible here without failing CI; drop once they pass.
+      - name: Pending tests (expected to fail for now)
+        continue-on-error: true
+        run: scripts/fullrust-tests.sh --include-ignored
 
   msrv:
     name: MSRV (1.95)

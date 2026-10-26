@@ -109,6 +109,11 @@ pub struct Library<'ctx> {
     handle: NonNull<c_void>,
 }
 
+// SAFETY: a dlopen handle is an opaque identifier; the foreign dlsym/dlclose
+// it is passed to are thread-safe.
+unsafe impl Send for Library<'_> {}
+unsafe impl Sync for Library<'_> {}
+
 impl<'ctx> Library<'ctx> {
     /// Look up `name` and reinterpret it as `T`, typically an
     /// `unsafe extern "C" fn` type.
