@@ -25,7 +25,9 @@ mod arch;
 mod context;
 mod error;
 pub mod ffi;
+mod heap;
 mod loader;
 
 pub use context::{Callback, Context, ContextBuilder, Library, OpenFlags, Symbol};
 pub use error::{Error, Result};
+pub use heap::HeapUsage;

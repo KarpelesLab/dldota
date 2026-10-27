@@ -3,6 +3,8 @@
 #ifndef DLDOTA_H
 #define DLDOTA_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -21,8 +23,22 @@ typedef struct dldota_ctx dldota_ctx;
  * Returns NULL on error; see dldota_error(). */
 dldota_ctx *dldota_ctx_new(const char *interpreter);
 
-/* Release the handle. The loader stays mapped until process exit. */
+/* Release the handle WITHOUT unloading: the foreign world is leaked. */
 void dldota_ctx_free(dldota_ctx *ctx);
+
+/* Unload: run foreign destructors and unmap everything, foreign heap included.
+ * Returns 0 and frees ctx on success; -1 with ctx still valid on failure
+ * (e.g. threads created by foreign code still running). */
+int dldota_ctx_unload(dldota_ctx *ctx);
+
+/* Every allocation made by foreign code goes through a per-context heap. */
+typedef struct dldota_heap_usage {
+    size_t live_allocations; /* allocations not yet freed */
+    size_t live_bytes;       /* bytes requested by those allocations */
+    size_t mapped_bytes;     /* address space mapped by the allocator */
+} dldota_heap_usage;
+
+void dldota_heap_usage(const dldota_ctx *ctx, dldota_heap_usage *out);
 
 /* dlopen/dlsym/dlclose equivalents. Pointers returned by dldota_sym() can be
  * called directly: they switch the thread pointer around the call. */

@@ -10,6 +10,8 @@ pub enum Error {
     InvalidElf(&'static str),
     /// The foreign `dlopen`/`dlsym` failed; contains its `dlerror()` text.
     Dl(String),
+    /// The context can't be unloaded yet (e.g. foreign threads still running).
+    Busy(String),
     Io(std::io::Error),
     /// Not implemented yet.
     Unimplemented(&'static str),
@@ -21,6 +23,7 @@ impl fmt::Display for Error {
             Error::InterpreterNotFound => f.write_str("no system dynamic loader found"),
             Error::InvalidElf(why) => write!(f, "invalid ELF image: {why}"),
             Error::Dl(msg) => f.write_str(msg),
+            Error::Busy(why) => write!(f, "context busy: {why}"),
             Error::Io(e) => write!(f, "I/O error: {e}"),
             Error::Unimplemented(what) => write!(f, "not implemented: {what}"),
         }

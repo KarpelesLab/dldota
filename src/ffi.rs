@@ -8,7 +8,7 @@ use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::os::unix::ffi::OsStrExt;
 use std::ptr::{self, NonNull};
 
-use crate::{Context, Error, OpenFlags};
+use crate::{Context, Error, HeapUsage, OpenFlags};
 
 /// Opaque context handle (`dldota_ctx` in C).
 pub type DldotaCtx = Context;
@@ -62,6 +62,47 @@ pub unsafe extern "C" fn dldota_ctx_free(ctx: *mut DldotaCtx) {
         // SAFETY: caller contract.
         drop(unsafe { Box::from_raw(ctx) });
     }
+}
+
+/// Unload the context: run foreign destructors and unmap everything, including
+/// the foreign heap. On success the handle is freed and 0 is returned; on
+/// failure (e.g. foreign threads still running) -1 is returned and `ctx` stays
+/// valid.
+///
+/// # Safety
+/// `ctx` must come from `dldota_ctx_new`, with nothing from it in use.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dldota_ctx_unload(ctx: *mut DldotaCtx) -> c_int {
+    if ctx.is_null() {
+        return -1;
+    }
+    // Move the context out but keep its allocation, so a failed unload can put
+    // it back and `ctx` stays valid for the caller.
+    // SAFETY: caller contract; `ctx` is not used again until refilled or freed.
+    let context = unsafe { ctx.read() };
+    match context.unload() {
+        Ok(()) => {
+            // SAFETY: from Box::leak in dldota_ctx_new; the value was moved out.
+            drop(unsafe { Box::from_raw(ctx.cast::<std::mem::MaybeUninit<DldotaCtx>>()) });
+            0
+        }
+        Err((still_loaded, e)) => {
+            set_error(e);
+            // SAFETY: the allocation is still live and currently moved-from.
+            unsafe { ctx.write(still_loaded) };
+            -1
+        }
+    }
+}
+
+/// Current foreign heap usage of the context.
+///
+/// # Safety
+/// `ctx` must be valid and `out` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dldota_heap_usage(ctx: *const DldotaCtx, out: *mut HeapUsage) {
+    // SAFETY: caller contract.
+    unsafe { out.write((*ctx).heap_usage()) };
 }
 
 /// `dlopen` through the context. `name` may be NULL for the global scope.

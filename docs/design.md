@@ -59,6 +59,17 @@ already. So we **synthesize the main program in memory**:
   `DT_STRTAB`/`DT_SYMTAB`/`DT_RELA`, and `DT_DEBUG` so gdb sees the link map
 - `R_*_GLOB_DAT` relocations for `dlopen`, `dlsym`, `dlclose`, `dlerror`,
   `dladdr`, `dlinfo`, `pthread_create`, ... into a GOT we own
+- **definitions** (`.dynsym` entries pointing at our code) for the symbols we
+  interpose. The main program comes first in every lookup scope, so these win
+  over libc's for every library, as `LD_PRELOAD` would:
+  - the `malloc` family: see [Per-context allocator](#per-context-allocator)
+  - `pthread_create`: track foreign-created threads for [Unloading](#unloading),
+    and give them stacks from context-owned memory (`pthread_attr_setstack`,
+    unless the caller set one). glibc never caches user-provided stacks, so a
+    joined thread's stack isn't left in glibc's stack cache where unload
+    couldn't reclaim it.
+  - `__cxa_atexit`, `__cxa_finalize`, `atexit`: own the exit-handler list, so
+    library destructors can run at unload on glibc *and* musl
 - `AT_ENTRY` points at our asm entry thunk
 
 The block is RW because `ld.so` writes `DT_DEBUG` and the GOT. This needs a spike
@@ -84,7 +95,10 @@ it (`environ`, `__libc_stack_end`, `argv`). Auxv is copied from the host
 `AT_RANDOM` (fresh 16 bytes). The fake-program fields are added: `AT_PHDR`,
 `AT_PHNUM`, `AT_PHENT`, `AT_ENTRY`, and `AT_BASE` = the ld.so load address. The
 envp passed in is the context's environment, so `LD_LIBRARY_PATH`,
-`LD_PRELOAD` and `GLIBC_TUNABLES` all work, per context.
+`LD_PRELOAD` and `GLIBC_TUNABLES` all work, per context. We append
+`glibc.pthread.rseq=0` to `GLIBC_TUNABLES`: glibc's rseq area lives in its TCB,
+and the kernel keeps writing to it, which would fault once the TCB is unmapped
+at unload. This also matters for borrowed TCBs.
 
 ### Return path
 
@@ -144,8 +158,8 @@ rules out most of std) or be rejected/documented. This is an open question.
 | FS base / `tpidr_el0` | ld.so | save/restore around bootstrap and every call (above) |
 | `set_tid_address` | glibc init (for the bootstrap thread) | `prctl(PR_GET_TID_ADDRESS)` before, restore after. Otherwise musl's `pthread_join` on that thread can hang |
 | `set_robust_list` | glibc init | save (`get_robust_list`) / restore |
-| rseq | glibc ≥ 2.35 registers it | harmless: the area lives in the leaked foreign TCB. If the host is static glibc, foreign registration fails gracefully |
-| `brk` | both mallocs cache the break | **hazard**: each can shrink the other's heap. Proposed fix: before bootstrap, place a guard mapping at the current break (`MAP_FIXED_NOREPLACE`) so brk can no longer grow and both allocators fall back to mmap. Needs verification |
+| rseq | glibc ≥ 2.35 registers it | disabled with `GLIBC_TUNABLES=glibc.pthread.rseq=0` (the TCB must be unmappable at unload) |
+| `brk` | a second malloc would cache the break | avoided: the foreign libc's malloc is replaced by the per-context allocator (mmap only) |
 | signals 32–34 | musl: SIGTIMER=32, SIGCANCEL=33, SIGSYNCCALL=34. glibc: SIGCANCEL=32, SIGSETXID=33 | check whether glibc installs these eagerly (≥2.34 seems lazy). Snapshot host handlers before bootstrap and compare after |
 
 ### 4. Signals during foreign code
@@ -158,22 +172,89 @@ call.
 
 ### 5. Other
 
-- Two mallocs: memory must be freed by the allocator that created it. This is
-  normal FFI discipline but deserves a note in the docs.
+- Two allocators: memory from foreign code must be freed by foreign code (the
+  library's own free function, or libc `free` through the context), never by
+  the host allocator. This is normal FFI discipline but deserves a note in the
+  docs.
 - Unwinding must never cross the boundary: Rust panics abort at `extern "C"`,
   and C++ exceptions must be caught on the foreign side.
-- `ld.so` and libc can never be unloaded. A context lives until the process
-  exits, so `Drop` releases the Rust handle but not the loader.
+- Unloading is explicit (`Context::unload`, see [Unloading](#unloading)).
+  Dropping a `Context` without it leaks the foreign world, because an implicit
+  unload could crash under a still-running foreign thread.
 - gdb: `DT_DEBUG` → `r_debug` lets gdb find foreign libraries. Worth keeping
   working.
 - If the host is in fact dynamically linked, we could offer a passthrough to the
   real `dlopen`, but that is out of scope for now.
 
+## Per-context allocator
+
+The fake main program defines the whole `malloc` family: `malloc`, `free`,
+`calloc`, `realloc`, `reallocarray`, `memalign`, `posix_memalign`,
+`aligned_alloc`, `valloc`, `pvalloc`, `malloc_usable_size`, `free_sized` and
+`free_aligned_sized`. glibc officially supports replacing malloc this way,
+libc-internal allocations included (`fopen`, `strdup`, and `ld.so` itself once
+relocated), and so does musl ≥ 1.2.1. Every foreign allocation then lands in
+memory the context owns:
+
+- **Unloading reclaims everything**: the heap is a set of context-owned
+  regions, unmapped wholesale. Without this, the foreign libc's heap leaks.
+- **Accounting**: `Context::heap_usage()` reports live allocations and bytes,
+  which helps find leaks in foreign libraries.
+- **No `brk` sharing**: the allocator is mmap-only, so the host and foreign
+  heaps can't shrink each other.
+
+Constraints on the allocator:
+
+- It runs with the *foreign* TP and on foreign-created threads, so it must not
+  touch host TLS or the host allocator. That's no_std-style Rust working on
+  regions it mmaps itself; no TP switch is needed to enter it.
+- It must be thread-safe and reasonably fast under contention: size-class
+  slabs, with large allocations getting their own mapping. Per-thread caches,
+  keyed by foreign TP, can come later.
+- Fork safety: a host `fork()` while another thread holds an allocator lock
+  must not deadlock the child, which needs an atfork hook or a reset in the
+  child.
+- `malloc_usable_size` and the alignment variants must be exact; some
+  libraries rely on them.
+
+## Unloading
+
+`Context::unload(self) -> Result<(), (Context, Error)>` tears the whole foreign
+world down. On failure the caller gets the context back intact.
+
+1. Take the context lock; consuming `self` guarantees no `Library`, `Symbol`
+   or `Callback` borrow survives on the Rust side (C callers must ensure the
+   same).
+2. Refuse with `Error::Busy` if a thread created through the interposed
+   `pthread_create` is still alive (checked against `/proc/self/task`): its code
+   would be unmapped under it, and a single thread can't be killed safely.
+3. `fflush(NULL)` in the foreign libc.
+4. Run the exit-handler list we own (`__cxa_atexit`/`atexit`), newest first.
+   Then run library finalizers: on glibc, the `_dl_fini` that `ld.so` passes to
+   our entry point; on musl (where `dlclose` and `__cxa_finalize` are no-ops),
+   each object's `DT_FINI_ARRAY`/`DT_FINI` in reverse load order, found through
+   the `DT_DEBUG` link map.
+5. Restore signal handlers that point into foreign mappings to the snapshot
+   taken at bootstrap.
+6. Unmap: every object's `PT_LOAD` ranges (collected with the foreign
+   `dl_iterate_phdr` before step 4), `ld.so`, the stub, the boot stack, foreign
+   TCBs, call/callback thunk pages, and the allocator's regions.
+
+What it can't reclaim: file descriptors and raw `mmap`s that a library
+forgets to release in its destructors, since they can't be told apart from
+the host's. Function pointers copied out of a `Symbol` dangle afterwards,
+which is part of the `unsafe` contract.
+
+Acceptance test (`tests/unload_cycles.rs`): boot, use and unload 100 times, then
+check that file-backed mappings, thread count and fd count are back to the
+baseline and anonymous memory hasn't grown.
+
 ## Crate layout
 
 ```
 src/lib.rs          public Rust API re-exports
-src/context.rs      Context, ContextBuilder, Library, Symbol
+src/context.rs      Context, ContextBuilder, Library, Symbol, Callback
+src/heap.rs         per-context allocator interposed as the foreign malloc
 src/error.rs        Error type
 src/ffi.rs          C ABI (libdldota.a), mirrored by include/dldota.h
 src/loader/elf.rs   ELF parsing + mapping of the interpreter
@@ -196,5 +277,7 @@ doesn't depend on which libc the host uses.
 1. In-memory stub accepted by glibc `dl_main` (x86_64); `dlopen("libz.so.1")`
    and call `zlibVersion` from a `x86_64-unknown-linux-musl` static binary
 2. The same against a musl system interpreter (Alpine container)
-3. Verify the brk guard idea and the signal 32–34 behaviour
+3. Verify the signal 32–34 behaviour
 4. Trampolines plus a multi-threaded call stress test under the MVP lock
+5. Per-context allocator, interposed on both glibc and musl
+6. Unload, then the boot/use/unload loop with no leaks

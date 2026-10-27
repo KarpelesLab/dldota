@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::ptr::NonNull;
 
 use crate::error::{Error, Result};
+use crate::heap::HeapUsage;
 use crate::loader;
 
 /// `dlopen` mode flags. The values are identical in glibc and musl.
@@ -59,10 +60,11 @@ impl ContextBuilder {
     }
 }
 
-/// A booted foreign dynamic loader.
+/// A booted foreign dynamic loader, with its own libc and heap.
 ///
-/// The loader and its libc can never be unloaded: dropping a `Context` releases
-/// the handle, but the mapped images stay in the process until it exits.
+/// Call [`Context::unload`] to tear it down. Dropping a `Context` without
+/// unloading leaks the foreign world rather than risk unmapping code that a
+/// foreign thread is still running.
 pub struct Context {
     _private: (),
 }
@@ -81,6 +83,21 @@ impl Context {
     pub fn open(&self, name: &CStr, flags: OpenFlags) -> Result<Library<'_>> {
         let handle = self.open_raw(Some(name), flags)?;
         Ok(Library { ctx: self, handle })
+    }
+
+    /// Tear down the foreign world: run library destructors and exit handlers,
+    /// then unmap every object, the loader, and the foreign heap.
+    ///
+    /// Fails with [`Error::Busy`] while threads created by foreign code are
+    /// still alive; the context is handed back intact.
+    pub fn unload(self) -> std::result::Result<(), (Self, Error)> {
+        Err((self, Error::Unimplemented("unload")))
+    }
+
+    /// Current usage of the foreign heap. Every allocation made by foreign
+    /// code, including libc-internal ones, goes through the context's allocator.
+    pub fn heap_usage(&self) -> HeapUsage {
+        HeapUsage::default()
     }
 
     /// The foreign global scope (`dlopen(NULL)`): the system libc and anything
