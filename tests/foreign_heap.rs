@@ -16,7 +16,7 @@ type Fopen = unsafe extern "C" fn(*const c_char, *const c_char) -> *mut c_void;
 type Fclose = unsafe extern "C" fn(*mut c_void) -> c_int;
 
 #[test]
-#[ignore = "loader bootstrap not implemented yet"]
+#[ignore = "per-context allocator not implemented yet"]
 fn foreign_allocations_use_the_context_heap() {
     let ctx = context();
     let libc = global(&ctx);

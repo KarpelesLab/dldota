@@ -12,7 +12,7 @@ use common::{context, corpus, open, sym};
 type FreeCCtx = unsafe extern "C" fn(*mut c_void) -> usize;
 
 #[test]
-#[ignore = "loader bootstrap not implemented yet"]
+#[ignore = "unload not implemented yet"]
 fn unload_refused_while_foreign_threads_run() {
     let ctx = context();
     // NODELETE keeps libzstd (and its idle workers' code) mapped after the

@@ -23,7 +23,10 @@ fn host_has_no_interpreter() {
 }
 
 #[test]
-#[ignore = "loader bootstrap not implemented yet"]
+#[cfg_attr(
+    not(target_arch = "x86_64"),
+    ignore = "loader bootstrap not implemented on this architecture yet"
+)]
 fn zlib_version() {
     let ctx = Context::new().expect("boot the system loader");
     let libz = ctx.open(c"libz.so.1", OpenFlags::NOW).expect("open libz");

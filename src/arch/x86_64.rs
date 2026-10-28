@@ -32,10 +32,10 @@ pub(crate) fn thread_pointer() -> usize {
 }
 
 unsafe extern "C" {
-    fn dldota_x86_64_boot(state: *mut crate::loader::BootState, entry: usize, sp: usize);
-    fn dldota_x86_64_entry();
-    fn dldota_x86_64_tramp_out();
-    fn dldota_x86_64_tramp_in();
+    fn __dldota_x86_64_boot(state: *mut crate::loader::BootState, entry: usize, sp: usize);
+    fn __dldota_x86_64_entry();
+    fn __dldota_x86_64_tramp_out();
+    fn __dldota_x86_64_tramp_in();
 }
 
 /// Jump into `ld.so` at `entry` with the initial stack `sp`; returns once the
@@ -46,19 +46,19 @@ unsafe extern "C" {
 /// `state` must be published in `BOOT_STATE` for the entry code.
 pub(crate) unsafe fn boot(state: *mut crate::loader::BootState, entry: usize, sp: usize) {
     // SAFETY: forwarded to the caller.
-    unsafe { dldota_x86_64_boot(state, entry, sp) }
+    unsafe { __dldota_x86_64_boot(state, entry, sp) }
 }
 
 pub(crate) fn entry_address() -> usize {
-    dldota_x86_64_entry as *const () as usize
+    __dldota_x86_64_entry as *const () as usize
 }
 
 pub(crate) fn tramp_out_address() -> usize {
-    dldota_x86_64_tramp_out as *const () as usize
+    __dldota_x86_64_tramp_out as *const () as usize
 }
 
 pub(crate) fn tramp_in_address() -> usize {
-    dldota_x86_64_tramp_in as *const () as usize
+    __dldota_x86_64_tramp_in as *const () as usize
 }
 
 /// Write a thunk that loads `target` into r11 and `data` into r10, then jumps
@@ -147,13 +147,13 @@ macro_rules! restore_args {
 core::arch::global_asm!(
     ".pushsection .text.dldota_x86_64,\"ax\",@progbits",
 
-    // void dldota_x86_64_boot(BootState *state, entry, sp)
+    // void __dldota_x86_64_boot(BootState *state, entry, sp)
     // Saves the host's callee-saved registers and stack in `state`, then
     // enters ld.so exactly as the kernel would.
     ".p2align 4",
-    ".globl dldota_x86_64_boot",
-    ".hidden dldota_x86_64_boot",
-    "dldota_x86_64_boot:",
+    ".globl __dldota_x86_64_boot",
+    ".hidden __dldota_x86_64_boot",
+    "__dldota_x86_64_boot:",
     "push rbp",
     "push rbx",
     "push r12",
@@ -171,9 +171,9 @@ core::arch::global_asm!(
     // rsp -> argc, rdx = ld.so's fini function. Calls the foreign
     // __libc_start_main, which initializes libc and calls our "main".
     ".p2align 4",
-    ".globl dldota_x86_64_entry",
-    ".hidden dldota_x86_64_entry",
-    "dldota_x86_64_entry:",
+    ".globl __dldota_x86_64_entry",
+    ".hidden __dldota_x86_64_entry",
+    "__dldota_x86_64_entry:",
     "mov rax, [rip + {state}]",
     "mov [rax + 32], rdx",     // state.rtld_fini
     "xor ebp, ebp",
@@ -190,7 +190,7 @@ core::arch::global_asm!(
     "call [rax]",
     "ud2",
     // "main": the foreign libc is up. Record its thread pointer, restore the
-    // host's, and return from dldota_x86_64_boot. This frame stays on the
+    // host's, and return from __dldota_x86_64_boot. This frame stays on the
     // boot stack, which the context keeps.
     "4:",
     "mov r8, [rip + {state}]",
@@ -216,9 +216,9 @@ core::arch::global_asm!(
     // rbx carries the host TP across the call (callee-saved); the caller's
     // rbx/r12 are parked too.
     ".p2align 4",
-    ".globl dldota_x86_64_tramp_out",
-    ".hidden dldota_x86_64_tramp_out",
-    "dldota_x86_64_tramp_out:",
+    ".globl __dldota_x86_64_tramp_out",
+    ".hidden __dldota_x86_64_tramp_out",
+    "__dldota_x86_64_tramp_out:",
     "sub rsp, 200",
     save_args!(),
     "mov rdi, r10",
@@ -256,9 +256,9 @@ core::arch::global_asm!(
     // r10 = gate, TP = foreign. Only threads borrowing the gate's TCB have a
     // host TCB to return to.
     ".p2align 4",
-    ".globl dldota_x86_64_tramp_in",
-    ".hidden dldota_x86_64_tramp_in",
-    "dldota_x86_64_tramp_in:",
+    ".globl __dldota_x86_64_tramp_in",
+    ".hidden __dldota_x86_64_tramp_in",
+    "__dldota_x86_64_tramp_in:",
     "sub rsp, 216",            // save area + foreign TP + padding
     save_args!(),
     "mov rax, qword ptr fs:[0]",

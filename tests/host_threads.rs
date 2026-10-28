@@ -17,7 +17,10 @@ const ROUNDS: usize = 200;
 const Z_OK: c_int = 0;
 
 #[test]
-#[ignore = "loader bootstrap not implemented yet"]
+#[cfg_attr(
+    not(target_arch = "x86_64"),
+    ignore = "loader bootstrap not implemented on this architecture yet"
+)]
 fn concurrent_zlib_roundtrips() {
     let ctx = context();
     let libz = open(&ctx, c"libz.so.1");

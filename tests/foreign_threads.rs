@@ -16,7 +16,10 @@ const ZSTD_C_NB_WORKERS: c_int = 400;
 const WORKERS: c_int = 4;
 
 #[test]
-#[ignore = "loader bootstrap not implemented yet"]
+#[cfg_attr(
+    not(target_arch = "x86_64"),
+    ignore = "loader bootstrap not implemented on this architecture yet"
+)]
 fn zstd_worker_pool() {
     let ctx = context();
     let zstd = open(&ctx, c"libzstd.so.1");

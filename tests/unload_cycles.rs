@@ -60,7 +60,7 @@ fn cycle() {
 }
 
 #[test]
-#[ignore = "loader bootstrap not implemented yet"]
+#[ignore = "unload not implemented yet"]
 fn boot_use_unload_cycles() {
     let initial = footprint();
     // Warm-up: lets the host allocator and std reach a steady state.
