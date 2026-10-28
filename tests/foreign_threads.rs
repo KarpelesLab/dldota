@@ -9,7 +9,7 @@ mod common;
 
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 
-use common::{context, corpus, open, sym, thread_count};
+use common::{context, corpus, open, settled_thread_count, sym, thread_count};
 
 const ZSTD_C_COMPRESSION_LEVEL: c_int = 100;
 const ZSTD_C_NB_WORKERS: c_int = 400;
@@ -92,7 +92,7 @@ fn zstd_worker_pool() {
         out
     };
     assert_eq!(
-        thread_count(),
+        settled_thread_count(before),
         before,
         "worker threads not joined by ZSTD_freeCCtx"
     );

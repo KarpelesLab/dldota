@@ -35,6 +35,20 @@ pub fn thread_count() -> usize {
     std::fs::read_dir("/proc/self/task").unwrap().count()
 }
 
+/// The thread count once it reaches `expected`, or after 2 s. A joined
+/// thread can still be listed in /proc/self/task for a moment: `pthread_join`
+/// returns when the kernel clears its tid, before the task is fully reaped.
+pub fn settled_thread_count(expected: usize) -> usize {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let n = thread_count();
+        if n == expected || std::time::Instant::now() >= deadline {
+            return n;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 /// Deterministic, compressible test data: pseudo-random words.
 pub fn corpus(len: usize) -> Vec<u8> {
     const WORDS: &[&[u8]] = &[

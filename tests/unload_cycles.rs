@@ -7,7 +7,7 @@ mod common;
 
 use std::ffi::{c_int, c_ulong, c_void};
 
-use common::{Footprint, context, corpus, footprint, open, sym};
+use common::{Footprint, context, corpus, footprint, open, settled_thread_count, sym};
 
 const CYCLES: usize = 100;
 /// Allowed growth of anonymous memory over all cycles (host allocator noise).
@@ -82,7 +82,11 @@ fn boot_use_unload_cycles() {
     };
     let leaked = leaked_files(&initial);
     assert!(leaked.is_empty(), "file mappings left behind: {leaked:?}");
-    assert_eq!(after.threads, initial.threads, "threads left behind");
+    assert_eq!(
+        settled_thread_count(initial.threads),
+        initial.threads,
+        "threads left behind"
+    );
     assert_eq!(after.fds, initial.fds, "file descriptors left behind");
     assert!(
         after.anon_bytes <= baseline.anon_bytes + ANON_SLACK,
