@@ -49,7 +49,6 @@ impl Thunks {
     }
 
     /// The mappings backing the thunks, as `(start, len)`.
-    #[allow(dead_code)] // used by unload
     pub(crate) fn regions(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.chunks
             .iter()

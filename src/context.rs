@@ -8,8 +8,9 @@ use std::sync::Mutex;
 
 use crate::error::{Error, Result};
 use crate::gate::Gate;
-use crate::heap::{self, Heap, HeapUsage};
+use crate::heap::{self, HeapUsage};
 use crate::loader;
+use crate::runtime::{self, Runtime};
 use crate::thunk::Thunks;
 
 type DlOpen = unsafe extern "C" fn(*const c_char, c_int) -> *mut c_void;
@@ -77,17 +78,25 @@ impl ContextBuilder {
         // Leaked: thunks and foreign code hold pointers to the gate and the
         // heap, and the foreign world outlives a dropped Context (see `unload`).
         let gate: &'static Gate = Box::leak(Box::new(Gate::new()));
-        let heap: &'static Heap = Box::leak(Box::new(Heap::new(loader::page_size())));
+        let rt: &'static Runtime = Box::leak(Box::new(Runtime::new(loader::page_size())));
         let mut thunks = Thunks::default();
+        let heap_data = &rt.heap as *const _ as usize;
+        let rt_data = rt as *const Runtime as usize;
         let defs = heap::exports()
             .into_iter()
-            .map(|(name, func)| Ok((name, thunks.bound(func, heap as *const Heap as usize)?)))
+            .map(|(name, func)| (name, func, heap_data))
+            .chain(
+                runtime::exports()
+                    .into_iter()
+                    .map(|(name, func)| (name, func, rt_data)),
+            )
+            .map(|(name, func, data)| Ok((name, thunks.bound(func, data)?)))
             .collect::<Result<Vec<_>>>()?;
 
         let booted = loader::boot(&interpreter, env, &defs)?;
         gate.boot_tp
             .store(booted.foreign_tp, std::sync::atomic::Ordering::Release);
-        heap.set_errno_location(booted.errno_location);
+        rt.heap.set_errno_location(booted.errno_location);
 
         let mut wrap = |target: usize| thunks.outbound(gate, target);
         // SAFETY: each thunk forwards to the function of that signature.
@@ -98,11 +107,14 @@ impl ContextBuilder {
                 dlclose: std::mem::transmute::<usize, DlClose>(wrap(booted.dlclose)?),
                 dlerror: std::mem::transmute::<usize, DlError>(wrap(booted.dlerror)?),
                 gate,
-                heap,
+                rt,
                 thunks: Mutex::new(thunks),
-                _booted: booted,
+                fflush: None,
+                booted,
             }
         };
+        let mut inner = inner;
+        inner.resolve_libc();
         Ok(Context {
             inner: Box::leak(Box::new(inner)),
         })
@@ -118,18 +130,52 @@ pub struct Context {
     inner: &'static Inner,
 }
 
-struct Inner {
-    gate: &'static Gate,
-    heap: &'static Heap,
-    thunks: Mutex<Thunks>,
+pub(crate) struct Inner {
+    pub(crate) gate: &'static Gate,
+    pub(crate) rt: &'static Runtime,
+    pub(crate) thunks: Mutex<Thunks>,
     dlopen: DlOpen,
     dlsym: DlSym,
     dlclose: DlClose,
     dlerror: DlError,
-    _booted: loader::Booted,
+    /// The foreign `fflush`, through an outbound thunk.
+    pub(crate) fflush: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
+    pub(crate) booted: loader::Booted,
 }
 
 impl Inner {
+    /// Look up libc functions the runtime needs: the real `pthread_create`
+    /// (called raw, from foreign code) and `fflush` (for unload).
+    fn resolve_libc(&mut self) {
+        // glibc < 2.34 keeps pthread_create in libpthread; musl answers both.
+        for lib in [c"libc.so.6", c"libpthread.so.0"] {
+            // SAFETY: valid C strings; NOLOAD only finds loaded objects.
+            let handle =
+                unsafe { (self.dlopen)(lib.as_ptr(), OpenFlags::LAZY.0 | OpenFlags::NOLOAD.0) };
+            if handle.is_null() {
+                continue;
+            }
+            // SAFETY: a live handle and valid C strings.
+            unsafe {
+                let create = (self.dlsym)(handle, c"pthread_create".as_ptr());
+                if !create.is_null() {
+                    self.rt.set_pthread_create(create as usize);
+                }
+                let fflush = (self.dlsym)(handle, c"fflush".as_ptr());
+                if self.fflush.is_none() && !fflush.is_null() {
+                    let mut thunks = self.thunks.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Ok(t) = thunks.outbound(self.gate, fflush as usize) {
+                        self.fflush = Some(std::mem::transmute::<
+                            usize,
+                            unsafe extern "C" fn(*mut c_void) -> c_int,
+                        >(t));
+                    }
+                }
+                (self.dlclose)(handle);
+            }
+        }
+    }
+
     /// The foreign `dlerror()` text. Call with the gate held, right after the
     /// failing call, so no other thread's error replaces it.
     fn last_error(&self, fallback: &str) -> Error {
@@ -170,13 +216,23 @@ impl Context {
     /// Fails with [`Error::Busy`] while threads created by foreign code are
     /// still alive; the context is handed back intact.
     pub fn unload(self) -> std::result::Result<(), (Self, Error)> {
-        Err((self, Error::Unimplemented("unload")))
+        // SAFETY: consuming `self` ends every Library/Symbol/Callback borrow.
+        if let Err(e) = unsafe { self.inner.unload() } {
+            return Err((self, e));
+        }
+        // SAFETY: these were leaked in `build` and nothing refers to them now.
+        unsafe {
+            let inner = Box::from_raw(self.inner as *const Inner as *mut Inner);
+            drop(Box::from_raw(inner.gate as *const Gate as *mut Gate));
+            drop(Box::from_raw(inner.rt as *const Runtime as *mut Runtime));
+        }
+        Ok(())
     }
 
     /// Current usage of the foreign heap. Every allocation made by foreign
     /// code, including libc-internal ones, goes through the context's allocator.
     pub fn heap_usage(&self) -> HeapUsage {
-        self.inner.heap.usage()
+        self.inner.rt.heap.usage()
     }
 
     /// The foreign global scope (`dlopen(NULL)`): the system libc and anything

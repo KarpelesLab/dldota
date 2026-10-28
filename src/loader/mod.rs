@@ -54,7 +54,6 @@ pub(crate) enum Flavor {
 }
 
 /// A booted foreign loader.
-#[allow(dead_code)] // regions and rtld_fini are for unload
 pub(crate) struct Booted {
     pub flavor: Flavor,
     pub foreign_tp: usize,
@@ -66,6 +65,13 @@ pub(crate) struct Booted {
     pub errno_location: usize,
     /// Everything we mapped: ld.so, the stub, the boot stack.
     pub regions: Vec<(usize, usize)>,
+    /// Load bias of ld.so and of the stub (the main program).
+    pub ld_base: usize,
+    pub stub_base: usize,
+    /// Where ld.so stores `&r_debug` (the head of its object list).
+    pub debug_slot: usize,
+    /// Signal dispositions before boot, indexed by signal number.
+    pub signals: Vec<Option<sys::KSigaction>>,
 }
 
 /// The host page size.
@@ -79,10 +85,13 @@ pub(crate) fn page_size() -> usize {
     })
 }
 
-/// Add `glibc.pthread.rseq=0` to `GLIBC_TUNABLES`: glibc's rseq area lives in
-/// its TCB, and the kernel would keep writing to it after unload.
+/// Add our settings to `GLIBC_TUNABLES`, so a context can be unloaded:
+/// - `rseq=0`: glibc's rseq area lives in its TCB, and the kernel would keep
+///   writing to it after unload;
+/// - `stack_cache_size=0`: glibc unmaps thread stacks when threads are joined
+///   instead of caching them where unload can't find them.
 fn tune_env(env: &mut Vec<CString>) {
-    const RSEQ_OFF: &str = "glibc.pthread.rseq=0";
+    const RSEQ_OFF: &str = "glibc.pthread.rseq=0:glibc.pthread.stack_cache_size=0";
     match env
         .iter_mut()
         .find(|e| e.as_bytes().starts_with(b"GLIBC_TUNABLES="))
@@ -166,6 +175,15 @@ pub(crate) fn boot(
     // Process state that libc initialization changes for the calling thread.
     let tid_address = sys::get_tid_address();
     let robust_list = sys::get_robust_list();
+    let dispositions = (0..=64)
+        .map(|sig| {
+            if sig == 0 {
+                None
+            } else {
+                sys::sigaction_get(sig)
+            }
+        })
+        .collect();
     let signals = sys::sigprocmask_set(!0)?;
 
     let mut state = BootState {
@@ -212,6 +230,10 @@ pub(crate) fn boot(
         dlerror: got(4),
         errno_location: got(5),
         regions: vec![ld.region, stub.region, boot_stack.region],
+        ld_base: ld.region.0,
+        stub_base: stub.region.0,
+        debug_slot: stub.debug_slot,
+        signals: dispositions,
     })
 }
 
@@ -246,6 +268,85 @@ pub(crate) fn find_interpreter() -> Result<PathBuf> {
         .map(PathBuf::from)
         .find(|p| p.exists())
         .ok_or(Error::InterpreterNotFound)
+}
+
+/// An object in the foreign loader's list (`r_debug.r_map`).
+pub(crate) struct LoadedObject {
+    /// Load bias (`l_addr`).
+    pub base: usize,
+    /// Its dynamic section (`l_ld`).
+    pub dynamic: usize,
+    /// Mapped span of its PT_LOAD segments: `(start, len)`.
+    pub span: Option<(usize, usize)>,
+}
+
+/// The objects the foreign loader has mapped, in load order, except ld.so,
+/// the stub and the vDSO, which are not ours to unmap.
+///
+/// # Safety
+/// The context must still be loaded.
+pub(crate) unsafe fn loaded_objects(booted: &Booted) -> Vec<LoadedObject> {
+    let vdso = stack::host_auxv()
+        .iter()
+        .find(|&&(k, _)| k == 33) // AT_SYSINFO_EHDR
+        .map_or(0, |&(_, v)| v);
+    let mut out = vec![];
+    // SAFETY: ld.so stored &r_debug in the stub's DT_DEBUG; glibc's r_debug
+    // and musl's `debug` share the layout {int version; link_map *map; ...},
+    // and link_map/dso both start {base, name, dynamic, next, prev}.
+    unsafe {
+        let r_debug = *(booted.debug_slot as *const usize);
+        if r_debug == 0 {
+            debug!("no r_debug: cannot enumerate loaded objects");
+            return out;
+        }
+        let mut map = *((r_debug + 8) as *const usize);
+        while map != 0 {
+            let words = map as *const usize;
+            let (base, name, dynamic, next) = (*words, *words.add(1), *words.add(2), *words.add(3));
+            let is_vdso = (vdso != 0 && base == vdso)
+                || (name != 0
+                    && CStr::from_ptr(name as *const _)
+                        .to_bytes()
+                        .windows(4)
+                        .any(|w| w == b"vdso"));
+            if base != booted.ld_base && base != booted.stub_base && !is_vdso {
+                out.push(LoadedObject {
+                    base,
+                    dynamic,
+                    span: mapped_span(base),
+                });
+            }
+            map = next;
+        }
+    }
+    out
+}
+
+/// PT_LOAD span of an object mapped at load bias `base`, from its in-memory
+/// ELF header (mapped at `base` for objects linked at address 0).
+unsafe fn mapped_span(base: usize) -> Option<(usize, usize)> {
+    // SAFETY: the caller passes a mapped object; its first page is readable.
+    let header = unsafe { std::slice::from_raw_parts(base as *const u8, 64) };
+    if header[..4] != *b"\x7fELF" {
+        return None;
+    }
+    let phoff = u64::from_le_bytes(header[32..40].try_into().ok()?) as usize;
+    let phentsize = u16::from_le_bytes(header[54..56].try_into().ok()?) as usize;
+    let phnum = u16::from_le_bytes(header[56..58].try_into().ok()?) as usize;
+    // SAFETY: program headers live in the first mapped page(s).
+    let image = unsafe { std::slice::from_raw_parts(base as *const u8, phoff + phnum * phentsize) };
+    let page = page_size();
+    let loads = elf::phdrs(image)
+        .ok()?
+        .into_iter()
+        .filter(|p| p.p_type == elf::PT_LOAD);
+    let (mut lo, mut hi) = (usize::MAX, 0);
+    for p in loads {
+        lo = lo.min(p.p_vaddr as usize & !(page - 1));
+        hi = hi.max((p.p_vaddr + p.p_memsz) as usize);
+    }
+    (lo < hi).then(|| (base + lo, hi.next_multiple_of(page) - lo))
 }
 
 #[cfg(test)]

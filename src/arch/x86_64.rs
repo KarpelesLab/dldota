@@ -79,23 +79,24 @@ pub(crate) unsafe fn write_thunk(dst: *mut u8, target: usize, data: usize, tramp
     unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), dst, THUNK_SIZE) };
 }
 
-/// Write a thunk that calls `func(data, a0, a1, a2)` for a C call `(a0, a1,
-/// a2)`: shifts up to three integer arguments and prepends `data`.
+/// Write a thunk that calls `func(data, a0, a1, a2, a3)` for a C call `(a0,
+/// a1, a2, a3)`: shifts up to four integer arguments and prepends `data`.
 ///
 /// # Safety
 /// `dst` must be writable for `THUNK_SIZE` bytes.
 pub(crate) unsafe fn write_bind_thunk(dst: *mut u8, func: usize, data: usize) {
     let mut code = [0xccu8; THUNK_SIZE];
-    code[0..9].copy_from_slice(&[
+    code[0..12].copy_from_slice(&[
+        0x49, 0x89, 0xc8, // mov r8, rcx
         0x48, 0x89, 0xd1, // mov rcx, rdx
         0x48, 0x89, 0xf2, // mov rdx, rsi
         0x48, 0x89, 0xfe, // mov rsi, rdi
     ]);
-    code[9..11].copy_from_slice(&[0x48, 0xbf]); // movabs rdi, data
-    code[11..19].copy_from_slice(&data.to_le_bytes());
-    code[19..21].copy_from_slice(&[0x48, 0xb8]); // movabs rax, func
-    code[21..29].copy_from_slice(&func.to_le_bytes());
-    code[29..31].copy_from_slice(&[0xff, 0xe0]); // jmp rax
+    code[12..14].copy_from_slice(&[0x48, 0xbf]); // movabs rdi, data
+    code[14..22].copy_from_slice(&data.to_le_bytes());
+    code[22..24].copy_from_slice(&[0x48, 0xb8]); // movabs rax, func
+    code[24..32].copy_from_slice(&func.to_le_bytes());
+    code[32..34].copy_from_slice(&[0xff, 0xe0]); // jmp rax
     // SAFETY: forwarded to the caller.
     unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), dst, THUNK_SIZE) };
 }

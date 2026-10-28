@@ -63,11 +63,12 @@ already. So we **synthesize the main program in memory**:
   interpose. The main program comes first in every lookup scope, so these win
   over libc's for every library, as `LD_PRELOAD` would:
   - the `malloc` family: see [Per-context allocator](#per-context-allocator)
-  - `pthread_create`: track foreign-created threads for [Unloading](#unloading),
-    and give them stacks from context-owned memory (`pthread_attr_setstack`,
-    unless the caller set one). glibc never caches user-provided stacks, so a
-    joined thread's stack isn't left in glibc's stack cache where unload
-    couldn't reclaim it.
+  - `pthread_create`: track foreign-created threads (their kernel tids) for
+    [Unloading](#unloading). Their stacks stay glibc's/musl's; glibc runs with
+    `glibc.pthread.stack_cache_size=0` so joined threads' stacks are unmapped
+    instead of cached where unload couldn't find them. (Giving threads
+    context-owned stacks instead would need `pthread_join`/`pthread_detach`
+    interposed too, to know when a stack can be freed.)
   - `__cxa_atexit`, `__cxa_finalize`, `atexit`: own the exit-handler list, so
     library destructors can run at unload on glibc *and* musl
 - `AT_ENTRY` points at our asm entry thunk
@@ -96,7 +97,8 @@ it (`environ`, `__libc_stack_end`, `argv`). Auxv is copied from the host
 `AT_PHNUM`, `AT_PHENT`, `AT_ENTRY`, and `AT_BASE` = the ld.so load address. The
 envp passed in is the context's environment, so `LD_LIBRARY_PATH`,
 `LD_PRELOAD` and `GLIBC_TUNABLES` all work, per context. We append
-`glibc.pthread.rseq=0` to `GLIBC_TUNABLES`: glibc's rseq area lives in its TCB,
+`glibc.pthread.rseq=0` (and `glibc.pthread.stack_cache_size=0`, see below) to
+`GLIBC_TUNABLES`: glibc's rseq area lives in its TCB,
 and the kernel keeps writing to it, which would fault once the TCB is unmapped
 at unload. This also matters for borrowed TCBs.
 

@@ -11,9 +11,10 @@
 //! is itself 64 KiB-aligned can only be a large block with alignment of at
 //! least 64 KiB; its header sits just below it.
 
-use std::cell::UnsafeCell;
 use std::ffi::{CStr, c_int, c_void};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::lock::RawLock;
 
 use crate::sys;
 
@@ -95,15 +96,11 @@ impl State {
 }
 
 pub(crate) struct Heap {
-    lock: AtomicU32,
-    state: UnsafeCell<State>,
+    state: RawLock<State>,
     page: usize,
     /// The foreign `__errno_location`, once the loader resolved it.
     errno_location: AtomicUsize,
 }
-
-// SAFETY: `state` is only accessed with `lock` held.
-unsafe impl Sync for Heap {}
 
 /// Abort without touching std: we may be on a foreign thread.
 fn die(msg: &str) -> ! {
@@ -122,8 +119,7 @@ fn class_of(size: usize) -> Option<usize> {
 impl Heap {
     pub(crate) fn new(page: usize) -> Self {
         Heap {
-            lock: AtomicU32::new(0),
-            state: UnsafeCell::new(State::EMPTY),
+            state: RawLock::new(State::EMPTY),
             page,
             errno_location: AtomicUsize::new(0),
         }
@@ -138,21 +134,7 @@ impl Heap {
     }
 
     fn with<R>(&self, f: impl FnOnce(&mut State) -> R) -> R {
-        if self
-            .lock
-            .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            while self.lock.swap(2, Ordering::Acquire) != 0 {
-                sys::futex_wait(&self.lock, 2);
-            }
-        }
-        // SAFETY: the lock is held.
-        let r = f(unsafe { &mut *self.state.get() });
-        if self.lock.swap(0, Ordering::Release) == 2 {
-            sys::futex_wake(&self.lock, 1);
-        }
-        r
+        self.state.with(f)
     }
 
     fn set_errno(&self, err: c_int) {
@@ -270,7 +252,7 @@ impl Heap {
         Some(ptr)
     }
 
-    fn alloc(&self, size: usize, align: usize) -> *mut c_void {
+    pub(crate) fn alloc(&self, size: usize, align: usize) -> *mut c_void {
         let size = size.max(1);
         let align = align.max(MIN_ALIGN);
         let ptr = self.with(|s| {
@@ -320,7 +302,7 @@ impl Heap {
         }
     }
 
-    fn free(&self, ptr: *mut c_void) {
+    pub(crate) fn free(&self, ptr: *mut c_void) {
         let ptr = ptr as usize;
         if ptr == 0 {
             return;
@@ -379,7 +361,6 @@ impl Heap {
     }
 
     /// Unmap everything. Only for unload: every pointer becomes invalid.
-    #[allow(dead_code)] // used by unload
     pub(crate) fn release_all(&self) {
         self.with(|s| {
             // SAFETY: walking our own lists, then unmapping what they describe.
@@ -493,7 +474,7 @@ extern "C" fn free_aligned_sized(heap: &Heap, ptr: *mut c_void, _align: usize, _
     heap.free(ptr)
 }
 
-/// The interposed symbols and their implementations (at most 3 C arguments,
+/// The interposed symbols and their implementations (at most 4 C arguments,
 /// so the heap-prepending thunk can shift them).
 pub(crate) fn exports() -> [(&'static CStr, usize); 13] {
     [

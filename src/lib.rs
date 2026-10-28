@@ -39,7 +39,10 @@ pub mod ffi;
 mod gate;
 mod heap;
 mod loader;
+mod lock;
+mod runtime;
 mod sys;
+mod teardown;
 mod thunk;
 
 fn debug_enabled() -> bool {

@@ -41,6 +41,8 @@ pub(crate) struct Stub {
     pub phnum: usize,
     /// Runtime address of the GOT: one slot per import, in order.
     pub got: usize,
+    /// Runtime address of the `DT_DEBUG` value, where ld.so stores `&r_debug`.
+    pub debug_slot: usize,
 }
 
 /// Byte buffer with 8-byte aligned appends.
@@ -169,6 +171,13 @@ pub(crate) fn build(
         (DT_DEBUG, 0),
         (DT_NULL, 0),
     ]);
+    let debug_slot = dynamic_off
+        + dynamic
+            .iter()
+            .position(|&(tag, _)| tag == DT_DEBUG)
+            .unwrap()
+            * 16
+        + 8;
     for (tag, val) in &dynamic {
         b.u64(*tag);
         b.u64(*val);
@@ -213,5 +222,6 @@ pub(crate) fn build(
         phdr: start,
         phnum: PHNUM,
         got: start + got_off,
+        debug_slot: start + debug_slot,
     })
 }

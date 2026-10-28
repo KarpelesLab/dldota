@@ -20,6 +20,10 @@ mod nr {
     pub const GETRANDOM: usize = 318;
     pub const MEMFD_CREATE: usize = 319;
     pub const FUTEX: usize = 202;
+    pub const GETPID: usize = 39;
+    pub const GETTID: usize = 186;
+    pub const TGKILL: usize = 234;
+    pub const RT_SIGACTION: usize = 13;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -38,6 +42,10 @@ mod nr {
     pub const GETRANDOM: usize = 278;
     pub const MEMFD_CREATE: usize = 279;
     pub const FUTEX: usize = 98;
+    pub const GETPID: usize = 172;
+    pub const GETTID: usize = 178;
+    pub const TGKILL: usize = 131;
+    pub const RT_SIGACTION: usize = 134;
 }
 
 pub(crate) const PROT_NONE: usize = 0;
@@ -290,6 +298,56 @@ pub(crate) fn futex_wake(word: &core::sync::atomic::AtomicU32, n: u32) {
                 0,
                 0,
             ],
+        )
+    };
+}
+
+pub(crate) fn gettid() -> i32 {
+    // SAFETY: no arguments, cannot fail.
+    unsafe { syscall(nr::GETTID, [0; 6]) }.map_or(0, |t| t as i32)
+}
+
+/// Whether thread `tid` of this process still exists.
+pub(crate) fn thread_alive(tid: i32) -> bool {
+    const ESRCH: i32 = 3;
+    // SAFETY: signal 0 only checks for existence.
+    let pid = unsafe { syscall(nr::GETPID, [0; 6]) }.unwrap_or(0);
+    // SAFETY: as above.
+    let r = unsafe { syscall(nr::TGKILL, [pid, tid as usize, 0, 0, 0, 0]) };
+    !matches!(r, Err(e) if e.raw_os_error() == Some(ESRCH))
+}
+
+/// The kernel's `struct sigaction` (x86_64 and aarch64 both have sa_restorer).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct KSigaction {
+    pub handler: usize,
+    pub flags: u64,
+    pub restorer: usize,
+    pub mask: u64,
+}
+
+pub(crate) fn sigaction_get(sig: usize) -> Option<KSigaction> {
+    let mut old = KSigaction::default();
+    // SAFETY: the kernel writes one struct to `old`.
+    unsafe {
+        syscall(
+            nr::RT_SIGACTION,
+            [sig, 0, &mut old as *mut KSigaction as usize, 8, 0, 0],
+        )
+    }
+    .ok()
+    .map(|_| old)
+}
+
+/// # Safety
+/// Installs `act` as the process-wide disposition of `sig`.
+pub(crate) unsafe fn sigaction_set(sig: usize, act: &KSigaction) {
+    // SAFETY: forwarded to the caller.
+    let _ = unsafe {
+        syscall(
+            nr::RT_SIGACTION,
+            [sig, act as *const KSigaction as usize, 0, 8, 0, 0],
         )
     };
 }
