@@ -12,7 +12,10 @@ into the process, boots it as the kernel would, and exposes its
 `dlopen`/`dlsym`. Calls into loaded code go through trampolines that switch the
 thread pointer, so the host runtime and the system libc can coexist.
 
-Status: scaffolding. See [docs/design.md](docs/design.md).
+Status: working on x86_64 (glibc and musl systems): boot, `dlopen`/`dlsym`,
+calls and callbacks with thread-pointer switching, a per-context heap that
+serves every foreign allocation, and unload. aarch64 is not implemented yet.
+See [docs/design.md](docs/design.md).
 
 - Rust: `dldota::Context`
 - C: `include/dldota.h` + `libdldota.a` (build with

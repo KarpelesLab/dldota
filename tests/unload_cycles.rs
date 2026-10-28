@@ -61,7 +61,7 @@ fn cycle() {
 }
 
 #[test]
-#[ignore = "unload not implemented yet"]
+#[ignore = "loader-internal allocations leak ~20 KiB (glibc) / ~49 KiB (musl) per cycle; see docs/design.md"]
 fn boot_use_unload_cycles() {
     let initial = footprint();
     // Warm-up: lets the host allocator and std reach a steady state.

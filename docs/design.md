@@ -242,14 +242,33 @@ world down. On failure the caller gets the context back intact.
    `dl_iterate_phdr` before step 4), `ld.so`, the stub, the boot stack, foreign
    TCBs, call/callback thunk pages, and the allocator's regions.
 
-What it can't reclaim: file descriptors and raw `mmap`s that a library
-forgets to release in its destructors, since they can't be told apart from
-the host's. Function pointers copied out of a `Symbol` dangle afterwards,
-which is part of the `unsafe` contract.
+What it can't reclaim:
 
-Acceptance test (`tests/unload_cycles.rs`): boot, use and unload 100 times, then
-check that file-backed mappings, thread count and fd count are back to the
-baseline and anonymous memory hasn't grown.
+- **Loader-internal allocations.** glibc's `ld.so` allocates the main thread's
+  TLS block and the first link maps with its bootstrap allocator, before our
+  `malloc` is in place: about 20 KiB per context, in `mmap`s nothing points
+  us to. musl's loader always uses its internal allocator for its per-object
+  records: a few KiB per library loaded. Neither goes through an interposable
+  symbol. Reclaiming them would mean diffing `/proc/self/maps` around boot,
+  which races with host threads mapping memory at the same time.
+- File descriptors and raw `mmap`s that a library forgets to release in its
+  destructors, since they can't be told apart from the host's.
+
+Function pointers copied out of a `Symbol` dangle afterwards, which is part
+of the `unsafe` contract.
+
+Measured in CI (`tests/unload_cycles.rs`): after 100 boot/use/unload cycles,
+file-backed mappings, threads and file descriptors are back to baseline;
+anonymous memory grows by ~20 KiB per cycle with glibc and ~49 KiB with musl.
+
+Other findings from making unload work:
+
+- glibc installs a `SIGSETXID` (33) handler once threads exist; unload puts
+  the pre-boot disposition back.
+- musl's loader-internal allocator would extend the program break, which a
+  host allocator may also use, and either can then shrink the other's heap
+  (each caches the break). A guard page at the break during boot makes
+  musl's first `brk` fail, after which it only uses `mmap`.
 
 ## Crate layout
 
