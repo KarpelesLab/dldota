@@ -14,9 +14,10 @@ pub(crate) struct RawLock<T> {
 // SAFETY: `value` is only reached with the lock held.
 unsafe impl<T: Send> Sync for RawLock<T> {}
 
-// No poisoning is needed for unwind safety: the guarded code never panics
-// (fatal errors trap), and if it did, the lock is never released by
-// unwinding, so later users would block instead of seeing half-done updates.
+// Unwinding out of `with` aborts the process (see `AbortOnUnwind`), so a
+// half-done update can never be observed and there is nothing to poison.
+// Poisoning wouldn't help anyway: most callers are foreign C code (malloc,
+// pthread_create, ...) that couldn't act on it.
 impl<T> UnwindSafe for RawLock<T> {}
 impl<T> RefUnwindSafe for RawLock<T> {}
 
@@ -39,11 +40,25 @@ impl<T> RawLock<T> {
                 sys::futex_wait(&self.word, 2);
             }
         }
+        let guard = AbortOnUnwind;
         // SAFETY: the lock is held.
         let r = f(unsafe { &mut *self.value.get() });
+        std::mem::forget(guard);
         if self.word.swap(0, Ordering::Release) == 2 {
             sys::futex_wake(&self.word, 1);
         }
         r
+    }
+}
+
+/// Dropped only if `f` unwinds: the guarded state may be half-updated, so
+/// stop right here. Can't use `std::thread::panicking()`, which reads host
+/// TLS, and this may run on a foreign thread.
+struct AbortOnUnwind;
+
+impl Drop for AbortOnUnwind {
+    fn drop(&mut self) {
+        let _ = sys::write(2, b"dldota: panic while holding an internal lock\n");
+        crate::arch::trap()
     }
 }
