@@ -110,6 +110,34 @@ fn tune_env(env: &mut Vec<CString>) {
     }
 }
 
+/// Keep the program break from growing while ld.so boots, by mapping a guard
+/// page right above it. musl's loader-internal allocator gives up on brk for
+/// good when its first attempt fails, and uses mmap instead. Otherwise it
+/// would share the break with the host's allocator and either could shrink
+/// the other's heap (each caches the break). Returns the guard, if placed.
+fn block_brk(page: usize) -> Option<usize> {
+    let at = sys::current_brk().next_multiple_of(page);
+    // SAFETY: NOREPLACE fails rather than replace anything mapped there.
+    let guard = unsafe {
+        sys::mmap(
+            at,
+            page,
+            sys::PROT_NONE,
+            sys::MAP_PRIVATE | sys::MAP_ANONYMOUS | sys::MAP_FIXED_NOREPLACE,
+            -1,
+            0,
+        )
+    }
+    .ok()?;
+    if guard != at {
+        // Old kernels treat NOREPLACE as a hint.
+        // SAFETY: we just mapped it.
+        let _ = unsafe { sys::munmap(guard, page) };
+        return None;
+    }
+    Some(guard)
+}
+
 /// Map the interpreter and the stub, then run ld.so until it reaches our entry.
 /// `defs` are the symbols the stub defines (interposes), as absolute addresses.
 pub(crate) fn boot(
@@ -186,6 +214,7 @@ pub(crate) fn boot(
             }
         })
         .collect();
+    let brk_guard = (flavor == Flavor::Musl).then(|| block_brk(page)).flatten();
     let signals = sys::sigprocmask_set(!0)?;
 
     let mut state = BootState {
@@ -223,6 +252,10 @@ pub(crate) fn boot(
         }
     }
     sys::sigprocmask_set(signals)?;
+    if let Some(guard) = brk_guard {
+        // SAFETY: our own guard page; musl has made its brk decision by now.
+        let _ = unsafe { sys::munmap(guard, page) };
+    }
     debug!(
         "back from ld.so: foreign TP {:#x}, rtld_fini {:#x}",
         state.foreign_tp, state.rtld_fini

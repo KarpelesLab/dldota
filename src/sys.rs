@@ -24,6 +24,7 @@ mod nr {
     pub const GETTID: usize = 186;
     pub const TGKILL: usize = 234;
     pub const RT_SIGACTION: usize = 13;
+    pub const BRK: usize = 12;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -46,6 +47,7 @@ mod nr {
     pub const GETTID: usize = 178;
     pub const TGKILL: usize = 131;
     pub const RT_SIGACTION: usize = 134;
+    pub const BRK: usize = 214;
 }
 
 pub(crate) const PROT_NONE: usize = 0;
@@ -56,6 +58,7 @@ pub(crate) const MAP_SHARED: usize = 0x01;
 pub(crate) const MAP_PRIVATE: usize = 0x02;
 pub(crate) const MAP_FIXED: usize = 0x10;
 pub(crate) const MAP_ANONYMOUS: usize = 0x20;
+pub(crate) const MAP_FIXED_NOREPLACE: usize = 0x10_0000;
 pub(crate) const SIG_SETMASK: usize = 2;
 const MFD_CLOEXEC: usize = 1;
 const PR_GET_TID_ADDRESS: usize = 40;
@@ -350,4 +353,10 @@ pub(crate) unsafe fn sigaction_set(sig: usize, act: &KSigaction) {
             [sig, act as *const KSigaction as usize, 0, 8, 0, 0],
         )
     };
+}
+
+/// The current program break.
+pub(crate) fn current_brk() -> usize {
+    // SAFETY: brk(0) only queries.
+    unsafe { syscall(nr::BRK, [0; 6]) }.unwrap_or(0)
 }
