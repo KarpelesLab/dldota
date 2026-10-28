@@ -6,6 +6,7 @@ use std::io;
 
 #[cfg(target_arch = "x86_64")]
 mod nr {
+    pub const WRITE: usize = 1;
     pub const CLOSE: usize = 3;
     pub const MMAP: usize = 9;
     pub const MPROTECT: usize = 10;
@@ -18,10 +19,12 @@ mod nr {
     pub const GET_ROBUST_LIST: usize = 274;
     pub const GETRANDOM: usize = 318;
     pub const MEMFD_CREATE: usize = 319;
+    pub const FUTEX: usize = 202;
 }
 
 #[cfg(target_arch = "aarch64")]
 mod nr {
+    pub const WRITE: usize = 64;
     pub const CLOSE: usize = 57;
     pub const MMAP: usize = 222;
     pub const MPROTECT: usize = 226;
@@ -34,6 +37,7 @@ mod nr {
     pub const GET_ROBUST_LIST: usize = 100;
     pub const GETRANDOM: usize = 278;
     pub const MEMFD_CREATE: usize = 279;
+    pub const FUTEX: usize = 98;
 }
 
 pub(crate) const PROT_NONE: usize = 0;
@@ -140,6 +144,16 @@ pub(crate) fn ftruncate(fd: i32, len: usize) -> io::Result<()> {
     unsafe { syscall(nr::FTRUNCATE, [fd as usize, len, 0, 0, 0, 0]) }.map(drop)
 }
 
+pub(crate) fn write(fd: i32, buf: &[u8]) -> io::Result<usize> {
+    // SAFETY: reads within `buf`.
+    unsafe {
+        syscall(
+            nr::WRITE,
+            [fd as usize, buf.as_ptr() as usize, buf.len(), 0, 0, 0],
+        )
+    }
+}
+
 pub(crate) fn close(fd: i32) -> io::Result<()> {
     // SAFETY: the caller owns `fd`.
     unsafe { syscall(nr::CLOSE, [fd as usize, 0, 0, 0, 0, 0]) }.map(drop)
@@ -240,4 +254,42 @@ pub(crate) fn getrandom(buf: &mut [u8]) -> io::Result<()> {
         }?;
     }
     Ok(())
+}
+
+const FUTEX_WAIT_PRIVATE: usize = 128;
+const FUTEX_WAKE_PRIVATE: usize = 129;
+
+/// Sleep while `*word == expected` (spurious wakeups possible).
+pub(crate) fn futex_wait(word: &core::sync::atomic::AtomicU32, expected: u32) {
+    // SAFETY: `word` is a live, aligned u32.
+    let _ = unsafe {
+        syscall(
+            nr::FUTEX,
+            [
+                word.as_ptr() as usize,
+                FUTEX_WAIT_PRIVATE,
+                expected as usize,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+}
+
+pub(crate) fn futex_wake(word: &core::sync::atomic::AtomicU32, n: u32) {
+    // SAFETY: `word` is a live, aligned u32.
+    let _ = unsafe {
+        syscall(
+            nr::FUTEX,
+            [
+                word.as_ptr() as usize,
+                FUTEX_WAKE_PRIVATE,
+                n as usize,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
 }

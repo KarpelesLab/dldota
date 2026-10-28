@@ -22,6 +22,7 @@ const IMPORTS: &[&CStr] = &[
     c"dlsym",
     c"dlclose",
     c"dlerror",
+    c"__errno_location",
 ];
 /// `libdl.so.2` is an empty stub on glibc ≥ 2.34 and provides `dl*` before
 /// that. musl maps both names to itself.
@@ -62,14 +63,20 @@ pub(crate) struct Booted {
     pub dlsym: usize,
     pub dlclose: usize,
     pub dlerror: usize,
+    pub errno_location: usize,
     /// Everything we mapped: ld.so, the stub, the boot stack.
     pub regions: Vec<(usize, usize)>,
 }
 
-fn page_size(auxv: &[(usize, usize)]) -> usize {
-    auxv.iter()
-        .find(|&&(k, _)| k == stack::AT_PAGESZ)
-        .map_or(4096, |&(_, v)| v)
+/// The host page size.
+pub(crate) fn page_size() -> usize {
+    static PAGE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *PAGE.get_or_init(|| {
+        stack::host_auxv()
+            .iter()
+            .find(|&&(k, _)| k == stack::AT_PAGESZ)
+            .map_or(4096, |&(_, v)| v)
+    })
 }
 
 /// Add `glibc.pthread.rseq=0` to `GLIBC_TUNABLES`: glibc's rseq area lives in
@@ -93,7 +100,12 @@ fn tune_env(env: &mut Vec<CString>) {
 }
 
 /// Map the interpreter and the stub, then run ld.so until it reaches our entry.
-pub(crate) fn boot(interpreter: &Path, mut env: Vec<CString>) -> Result<Booted> {
+/// `defs` are the symbols the stub defines (interposes), as absolute addresses.
+pub(crate) fn boot(
+    interpreter: &Path,
+    mut env: Vec<CString>,
+    defs: &[(&CStr, usize)],
+) -> Result<Booted> {
     if !arch::BOOT_SUPPORTED {
         return Err(Error::Unimplemented("booting on this architecture"));
     }
@@ -102,7 +114,7 @@ pub(crate) fn boot(interpreter: &Path, mut env: Vec<CString>) -> Result<Booted> 
     let _boot = BOOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let host_aux = stack::host_auxv();
-    let page = page_size(&host_aux);
+    let page = page_size();
     let hwcap2 = host_aux
         .iter()
         .find(|&&(k, _)| k == stack::AT_HWCAP2)
@@ -129,7 +141,7 @@ pub(crate) fn boot(interpreter: &Path, mut env: Vec<CString>) -> Result<Booted> 
 
     let interp =
         CString::new(interpreter.as_os_str().as_bytes()).map_err(|_| Error::InterpreterNotFound)?;
-    let stub = stub::build(page, &interp, NEEDED, IMPORTS)?;
+    let stub = stub::build(page, &interp, NEEDED, IMPORTS, defs)?;
     debug!("stub at {:#x}, GOT at {:#x}", stub.region.0, stub.got);
 
     let argv0 = std::env::args_os()
@@ -198,6 +210,7 @@ pub(crate) fn boot(interpreter: &Path, mut env: Vec<CString>) -> Result<Booted> 
         dlsym: got(2),
         dlclose: got(3),
         dlerror: got(4),
+        errno_location: got(5),
         regions: vec![ld.region, stub.region, boot_stack.region],
     })
 }

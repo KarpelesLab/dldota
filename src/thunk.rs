@@ -39,6 +39,15 @@ impl Thunks {
         self.get(gate, target, arch::tramp_in_address())
     }
 
+    /// A C-callable address that calls `func(data, args...)`; see
+    /// `arch::write_bind_thunk`.
+    pub(crate) fn bound(&mut self, func: usize, data: usize) -> io::Result<usize> {
+        let (rw, rx) = self.slot()?;
+        // SAFETY: a fresh slot in the writable view.
+        unsafe { arch::write_bind_thunk(rw as *mut u8, func, data) };
+        Ok(rx)
+    }
+
     /// The mappings backing the thunks, as `(start, len)`.
     #[allow(dead_code)] // used by unload
     pub(crate) fn regions(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
@@ -52,24 +61,23 @@ impl Thunks {
         if let Some(&thunk) = self.cache.get(&(target, tramp)) {
             return Ok(thunk);
         }
+        let (rw, rx) = self.slot()?;
+        // SAFETY: a fresh slot in the writable view.
+        unsafe { arch::write_thunk(rw as *mut u8, target, gate as *const Gate as usize, tramp) };
+        self.cache.insert((target, tramp), rx);
+        Ok(rx)
+    }
+
+    /// A fresh slot: (writable address, executable address).
+    fn slot(&mut self) -> io::Result<(usize, usize)> {
         if self.chunks.is_empty() || self.used + arch::THUNK_SIZE > CHUNK {
             self.chunks.push(new_chunk()?);
             self.used = 0;
         }
         let chunk = self.chunks.last().unwrap();
-        // SAFETY: the slot lies within the chunk's writable view and is unused.
-        unsafe {
-            arch::write_thunk(
-                (chunk.rw + self.used) as *mut u8,
-                target,
-                gate as *const Gate as usize,
-                tramp,
-            )
-        };
-        let thunk = chunk.rx + self.used;
+        let slot = (chunk.rw + self.used, chunk.rx + self.used);
         self.used += arch::THUNK_SIZE;
-        self.cache.insert((target, tramp), thunk);
-        Ok(thunk)
+        Ok(slot)
     }
 }
 

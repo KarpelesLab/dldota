@@ -19,8 +19,8 @@ use crate::arch;
 /// Shared with the trampolines: field offsets 0 and 8 are fixed.
 #[repr(C)]
 pub(crate) struct Gate {
-    /// Foreign thread pointer of the bootstrap TCB.
-    pub boot_tp: usize,
+    /// Foreign thread pointer of the bootstrap TCB (set once booted).
+    pub boot_tp: AtomicUsize,
     /// Host thread pointer of the thread currently borrowing `boot_tp`.
     pub cur_host_tp: AtomicUsize,
     lock: Mutex<Owner>,
@@ -48,9 +48,9 @@ thread_local! {
 }
 
 impl Gate {
-    pub(crate) fn new(boot_tp: usize) -> Self {
+    pub(crate) fn new() -> Self {
         Gate {
-            boot_tp,
+            boot_tp: AtomicUsize::new(0),
             cur_host_tp: AtomicUsize::new(0),
             lock: Mutex::new(Owner::default()),
             released: Condvar::new(),
@@ -123,7 +123,7 @@ pub(crate) extern "C" fn enter_foreign(
         saved_tp,
     });
     TpPair {
-        foreign: gate.boot_tp,
+        foreign: gate.boot_tp.load(Ordering::Acquire),
         host,
     }
 }

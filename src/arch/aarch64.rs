@@ -38,6 +38,18 @@ pub(crate) fn tramp_in_address() -> usize {
 
 /// # Safety
 /// Never called: `BOOT_SUPPORTED` is false.
+pub(crate) unsafe fn write_bind_thunk(_dst: *mut u8, _func: usize, _data: usize) {
+    unreachable!("aarch64 thunks not implemented")
+}
+
+/// Crash immediately, without touching std or any libc.
+pub(crate) fn trap() -> ! {
+    // SAFETY: raises SIGILL.
+    unsafe { core::arch::asm!("udf #0", options(noreturn, nomem, nostack)) }
+}
+
+/// # Safety
+/// Never called: `BOOT_SUPPORTED` is false.
 pub(crate) unsafe fn write_thunk(_dst: *mut u8, _target: usize, _data: usize, _tramp: usize) {
     unreachable!("aarch64 thunks not implemented")
 }

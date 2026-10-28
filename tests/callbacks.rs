@@ -28,7 +28,10 @@ unsafe extern "C" fn descending(a: *const c_void, b: *const c_void) -> c_int {
 }
 
 #[test]
-#[cfg_attr(not(target_arch = "x86_64"), ignore = "loader bootstrap not implemented on this architecture yet")]
+#[cfg_attr(
+    not(target_arch = "x86_64"),
+    ignore = "loader bootstrap not implemented on this architecture yet"
+)]
 fn qsort_with_host_comparator() {
     let ctx = context();
     let libc = global(&ctx);
@@ -70,7 +73,10 @@ unsafe extern "C" fn by_foreign_strcmp(a: *const c_void, b: *const c_void) -> c_
 }
 
 #[test]
-#[cfg_attr(not(target_arch = "x86_64"), ignore = "loader bootstrap not implemented on this architecture yet")]
+#[cfg_attr(
+    not(target_arch = "x86_64"),
+    ignore = "loader bootstrap not implemented on this architecture yet"
+)]
 fn reentrant_foreign_call_from_callback() {
     let ctx = context();
     let libc = global(&ctx);

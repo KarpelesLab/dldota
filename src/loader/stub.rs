@@ -78,15 +78,18 @@ impl Buf {
     }
 }
 
-/// Build the main program: depends on `needed`, imports `imports` into a GOT.
+/// Build the main program: depends on `needed`, imports `imports` into a GOT,
+/// and defines `defs` (name, absolute address), which then take precedence
+/// over every library's definition.
 pub(crate) fn build(
     page: usize,
     interp: &CStr,
     needed: &[&CStr],
     imports: &[&CStr],
+    defs: &[(&CStr, usize)],
 ) -> Result<Stub> {
     const PHNUM: usize = 5;
-    let nsyms = imports.len() + 1;
+    let nsyms = imports.len() + defs.len() + 1;
 
     // Lay out everything after the program headers first; the headers need
     // the final offsets, so they are written last into the reserved space.
@@ -104,6 +107,10 @@ pub(crate) fn build(
         .iter()
         .map(|n| b.put(n.to_bytes_with_nul()) - strtab_off)
         .collect();
+    let def_names: Vec<usize> = defs
+        .iter()
+        .map(|(n, _)| b.put(n.to_bytes_with_nul()) - strtab_off)
+        .collect();
     let strsz = b.0.len() - strtab_off;
 
     let symtab_off = b.align();
@@ -114,6 +121,16 @@ pub(crate) fn build(
         b.u16(0); // SHN_UNDEF
         b.u64(0); // st_value
         b.u64(0); // st_size
+    }
+    // Defined symbols: any section index but SHN_UNDEF/SHN_ABS, so every
+    // loader adds the load bias to st_value; patched once the block is mapped.
+    let mut def_values = vec![];
+    for &name in &def_names {
+        b.u32(name as u32);
+        b.put(&[GLOBAL_FUNC, 0]);
+        b.u16(1);
+        def_values.push(b.put(&[0; 8]));
+        b.u64(0);
     }
 
     // SysV hash with a single bucket chaining every symbol: lookups into this
@@ -186,6 +203,9 @@ pub(crate) fn build(
             0,
         )
     }?;
+    for (&at, &(_, addr)) in def_values.iter().zip(defs) {
+        b.0[at..at + 8].copy_from_slice(&(addr.wrapping_sub(start) as u64).to_le_bytes());
+    }
     // SAFETY: `total <= len`, freshly mapped.
     unsafe { std::ptr::copy_nonoverlapping(b.0.as_ptr(), start as *mut u8, total) };
     Ok(Stub {

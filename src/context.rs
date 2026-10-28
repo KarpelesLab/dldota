@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use crate::error::{Error, Result};
 use crate::gate::Gate;
-use crate::heap::HeapUsage;
+use crate::heap::{self, Heap, HeapUsage};
 use crate::loader;
 use crate::thunk::Thunks;
 
@@ -74,12 +74,21 @@ impl ContextBuilder {
                 })
                 .collect()
         });
-        let booted = loader::boot(&interpreter, env)?;
-
-        // Leaked: thunks and foreign code hold pointers to the gate, and the
-        // foreign world outlives a dropped Context (see `unload`).
-        let gate: &'static Gate = Box::leak(Box::new(Gate::new(booted.foreign_tp)));
+        // Leaked: thunks and foreign code hold pointers to the gate and the
+        // heap, and the foreign world outlives a dropped Context (see `unload`).
+        let gate: &'static Gate = Box::leak(Box::new(Gate::new()));
+        let heap: &'static Heap = Box::leak(Box::new(Heap::new(loader::page_size())));
         let mut thunks = Thunks::default();
+        let defs = heap::exports()
+            .into_iter()
+            .map(|(name, func)| Ok((name, thunks.bound(func, heap as *const Heap as usize)?)))
+            .collect::<Result<Vec<_>>>()?;
+
+        let booted = loader::boot(&interpreter, env, &defs)?;
+        gate.boot_tp
+            .store(booted.foreign_tp, std::sync::atomic::Ordering::Release);
+        heap.set_errno_location(booted.errno_location);
+
         let mut wrap = |target: usize| thunks.outbound(gate, target);
         // SAFETY: each thunk forwards to the function of that signature.
         let inner = unsafe {
@@ -89,6 +98,7 @@ impl ContextBuilder {
                 dlclose: std::mem::transmute::<usize, DlClose>(wrap(booted.dlclose)?),
                 dlerror: std::mem::transmute::<usize, DlError>(wrap(booted.dlerror)?),
                 gate,
+                heap,
                 thunks: Mutex::new(thunks),
                 _booted: booted,
             }
@@ -110,6 +120,7 @@ pub struct Context {
 
 struct Inner {
     gate: &'static Gate,
+    heap: &'static Heap,
     thunks: Mutex<Thunks>,
     dlopen: DlOpen,
     dlsym: DlSym,
@@ -165,7 +176,7 @@ impl Context {
     /// Current usage of the foreign heap. Every allocation made by foreign
     /// code, including libc-internal ones, goes through the context's allocator.
     pub fn heap_usage(&self) -> HeapUsage {
-        HeapUsage::default()
+        self.inner.heap.usage()
     }
 
     /// The foreign global scope (`dlopen(NULL)`): the system libc and anything
