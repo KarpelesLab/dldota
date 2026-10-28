@@ -70,6 +70,8 @@ pub(crate) struct Booted {
     pub stub_base: usize,
     /// Where ld.so stores `&r_debug` (the head of its object list).
     pub debug_slot: usize,
+    /// Debug only: anonymous mappings that appeared while ld.so booted.
+    pub boot_anon: Vec<(usize, usize)>,
     /// Signal dispositions before boot, indexed by signal number.
     pub signals: Vec<Option<sys::KSigaction>>,
 }
@@ -193,8 +195,22 @@ pub(crate) fn boot(
     };
     BOOT_STATE.store(&mut state, std::sync::atomic::Ordering::SeqCst);
     debug!("entering ld.so");
+    let maps_before = crate::debug_enabled().then(anon_mappings);
     // SAFETY: ld.so is mapped, the stack built for it, and BOOT_STATE set.
     unsafe { arch::boot(&mut state, ld.entry, boot_stack.sp) };
+    let boot_anon: Vec<(usize, usize)> = match maps_before {
+        Some(before) => anon_mappings()
+            .into_iter()
+            .filter(|m| !before.contains(m))
+            .collect(),
+        None => vec![],
+    };
+    for &(start, end) in &boot_anon {
+        debug!(
+            "ld.so mapped anonymous {start:#x}-{end:#x} ({} KiB) during boot",
+            (end - start) / 1024
+        );
+    }
     BOOT_STATE.store(std::ptr::null_mut(), std::sync::atomic::Ordering::SeqCst);
 
     // SAFETY: restoring exactly what this thread had before.
@@ -234,6 +250,7 @@ pub(crate) fn boot(
         stub_base: stub.region.0,
         debug_slot: stub.debug_slot,
         signals: dispositions,
+        boot_anon,
     })
 }
 
@@ -268,6 +285,27 @@ pub(crate) fn find_interpreter() -> Result<PathBuf> {
         .map(PathBuf::from)
         .find(|p| p.exists())
         .ok_or(Error::InterpreterNotFound)
+}
+
+/// Anonymous mappings of the process, as `(start, end)` (debugging aid).
+pub(crate) fn anon_mappings() -> Vec<(usize, usize)> {
+    let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
+        return vec![];
+    };
+    maps.lines()
+        .filter(|l| {
+            l.split_whitespace()
+                .nth(5)
+                .is_none_or(|p| !p.starts_with('/'))
+        })
+        .filter_map(|l| {
+            let (start, end) = l.split_whitespace().next()?.split_once('-')?;
+            Some((
+                usize::from_str_radix(start, 16).ok()?,
+                usize::from_str_radix(end, 16).ok()?,
+            ))
+        })
+        .collect()
 }
 
 /// An object in the foreign loader's list (`r_debug.r_map`).

@@ -90,6 +90,17 @@ impl Inner {
         }
         self.rt.heap.release_all();
         debug!("unloaded {} objects", objects.len());
+        if crate::debug_enabled() {
+            let now = loader::anon_mappings();
+            for &(start, end) in &booted.boot_anon {
+                if now.iter().any(|&(s, e)| s < end && start < e) {
+                    debug!(
+                        "still mapped after unload: {start:#x}-{end:#x} ({} KiB)",
+                        (end - start) / 1024
+                    );
+                }
+            }
+        }
         Ok(())
     }
 
