@@ -43,6 +43,6 @@ for bin in "${bins[@]}"; do
     echo "=== $(basename "$bin") on host ($(sed -n 's/^PRETTY_NAME=//p' /etc/os-release))"
     "$bin" "$@" || status=1
     echo "=== $(basename "$bin") on $ALPINE_IMAGE"
-    docker run --rm -v "$target_dir":"$target_dir":ro "$alpine_test_image" "$bin" "$@" || status=1
+    docker run --rm -e DLDOTA_DEBUG -v "$target_dir":"$target_dir":ro "$alpine_test_image" "$bin" "$@" || status=1
 done
 exit $status

@@ -21,12 +21,32 @@
 #[cfg(not(any(target_os = "linux", target_os = "fullrust")))]
 compile_error!("dldota only supports Linux");
 
+/// Trace to stderr when `DLDOTA_DEBUG` is set. Writes to the fd directly, so
+/// the output survives test capture and crashes.
+macro_rules! debug {
+    ($($arg:tt)*) => {
+        if $crate::debug_enabled() {
+            use std::io::Write as _;
+            let _ = std::io::stderr().write_all(format!("dldota: {}\n", format_args!($($arg)*)).as_bytes());
+        }
+    };
+}
+
 mod arch;
 mod context;
 mod error;
 pub mod ffi;
+mod gate;
 mod heap;
 mod loader;
+mod sys;
+mod thunk;
+
+fn debug_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED
+        .get_or_init(|| std::env::var_os("DLDOTA_DEBUG").is_some_and(|v| !v.is_empty() && v != "0"))
+}
 
 pub use context::{Callback, Context, ContextBuilder, Library, OpenFlags, Symbol};
 pub use error::{Error, Result};

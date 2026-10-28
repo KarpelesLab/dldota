@@ -6,10 +6,8 @@ mod aarch64;
 mod x86_64;
 
 #[cfg(target_arch = "aarch64")]
-#[allow(unused_imports)]
 pub(crate) use aarch64::*;
 #[cfg(target_arch = "x86_64")]
-#[allow(unused_imports)]
 pub(crate) use x86_64::*;
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]

@@ -99,7 +99,9 @@ jobs:
       # progress is visible here without failing CI; drop once they pass.
       - name: Pending tests (expected to fail for now)
         continue-on-error: true
-        run: scripts/fullrust-tests.sh --include-ignored
+        env:
+          DLDOTA_DEBUG: "1"
+        run: scripts/fullrust-tests.sh --include-ignored --test-threads=1
 
   msrv:
     name: MSRV (1.95)

@@ -1,12 +1,21 @@
-use std::ffi::{CStr, CString, c_void};
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::marker::PhantomData;
 use std::ops::Deref;
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::ptr::NonNull;
+use std::sync::Mutex;
 
 use crate::error::{Error, Result};
+use crate::gate::Gate;
 use crate::heap::HeapUsage;
 use crate::loader;
+use crate::thunk::Thunks;
+
+type DlOpen = unsafe extern "C" fn(*const c_char, c_int) -> *mut c_void;
+type DlSym = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void;
+type DlClose = unsafe extern "C" fn(*mut c_void) -> c_int;
+type DlError = unsafe extern "C" fn() -> *const c_char;
 
 /// `dlopen` mode flags. The values are identical in glibc and musl.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,8 +64,38 @@ impl ContextBuilder {
             Some(path) => path,
             None => loader::find_interpreter()?,
         };
-        let _ = (interpreter, self.env);
-        Err(Error::Unimplemented("loader bootstrap"))
+        let env = self.env.unwrap_or_else(|| {
+            std::env::vars_os()
+                .filter_map(|(k, v)| {
+                    let mut kv = k.as_bytes().to_vec();
+                    kv.push(b'=');
+                    kv.extend_from_slice(v.as_bytes());
+                    CString::new(kv).ok()
+                })
+                .collect()
+        });
+        let booted = loader::boot(&interpreter, env)?;
+
+        // Leaked: thunks and foreign code hold pointers to the gate, and the
+        // foreign world outlives a dropped Context (see `unload`).
+        let gate: &'static Gate = Box::leak(Box::new(Gate::new(booted.foreign_tp)));
+        let mut thunks = Thunks::default();
+        let mut wrap = |target: usize| thunks.outbound(gate, target);
+        // SAFETY: each thunk forwards to the function of that signature.
+        let inner = unsafe {
+            Inner {
+                dlopen: std::mem::transmute::<usize, DlOpen>(wrap(booted.dlopen)?),
+                dlsym: std::mem::transmute::<usize, DlSym>(wrap(booted.dlsym)?),
+                dlclose: std::mem::transmute::<usize, DlClose>(wrap(booted.dlclose)?),
+                dlerror: std::mem::transmute::<usize, DlError>(wrap(booted.dlerror)?),
+                gate,
+                thunks: Mutex::new(thunks),
+                _booted: booted,
+            }
+        };
+        Ok(Context {
+            inner: Box::leak(Box::new(inner)),
+        })
     }
 }
 
@@ -66,7 +105,36 @@ impl ContextBuilder {
 /// unloading leaks the foreign world rather than risk unmapping code that a
 /// foreign thread is still running.
 pub struct Context {
-    _private: (),
+    inner: &'static Inner,
+}
+
+struct Inner {
+    gate: &'static Gate,
+    thunks: Mutex<Thunks>,
+    dlopen: DlOpen,
+    dlsym: DlSym,
+    dlclose: DlClose,
+    dlerror: DlError,
+    _booted: loader::Booted,
+}
+
+impl Inner {
+    /// The foreign `dlerror()` text. Call with the gate held, right after the
+    /// failing call, so no other thread's error replaces it.
+    fn last_error(&self, fallback: &str) -> Error {
+        // SAFETY: dlerror returns NULL or a NUL-terminated string.
+        let msg = unsafe { (self.dlerror)() };
+        if msg.is_null() {
+            Error::Dl(fallback.to_owned())
+        } else {
+            // SAFETY: checked non-NULL above.
+            Error::Dl(
+                unsafe { CStr::from_ptr(msg) }
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        }
+    }
 }
 
 impl Context {
@@ -131,8 +199,9 @@ impl Context {
 
     /// Create a callback thunk for the raw host function `f`.
     pub fn callback_raw(&self, f: NonNull<c_void>) -> Result<NonNull<c_void>> {
-        let _ = f;
-        Err(Error::Unimplemented("callbacks"))
+        let mut thunks = self.inner.thunks.lock().unwrap_or_else(|e| e.into_inner());
+        let thunk = thunks.inbound(self.inner.gate, f.as_ptr() as usize)?;
+        Ok(NonNull::new(thunk as *mut c_void).expect("thunk address"))
     }
 
     /// Release a thunk created by [`Context::callback_raw`].
@@ -142,21 +211,36 @@ impl Context {
 
     /// `dlopen` returning the raw foreign handle; `None` opens the global scope.
     pub fn open_raw(&self, name: Option<&CStr>, flags: OpenFlags) -> Result<NonNull<c_void>> {
-        let _ = (name, flags);
-        Err(Error::Unimplemented("dlopen"))
+        let name_ptr = name.map_or(std::ptr::null(), CStr::as_ptr);
+        self.inner.gate.with(|| {
+            // SAFETY: NULL or a valid C string.
+            let handle = unsafe { (self.inner.dlopen)(name_ptr, flags.0) };
+            NonNull::new(handle).ok_or_else(|| self.inner.last_error("dlopen failed"))
+        })
     }
 
     /// `dlsym` on a raw foreign handle. The returned pointer is a trampoline
     /// that switches the thread pointer around the call.
     pub fn symbol_raw(&self, handle: NonNull<c_void>, name: &CStr) -> Result<NonNull<c_void>> {
-        let _ = (handle, name);
-        Err(Error::Unimplemented("dlsym"))
+        let target = self.inner.gate.with(|| {
+            // SAFETY: a handle from dlopen and a valid C string.
+            let sym = unsafe { (self.inner.dlsym)(handle.as_ptr(), name.as_ptr()) };
+            NonNull::new(sym).ok_or_else(|| self.inner.last_error("dlsym failed"))
+        })?;
+        let mut thunks = self.inner.thunks.lock().unwrap_or_else(|e| e.into_inner());
+        let thunk = thunks.outbound(self.inner.gate, target.as_ptr() as usize)?;
+        Ok(NonNull::new(thunk as *mut c_void).expect("thunk address"))
     }
 
     /// `dlclose` on a raw foreign handle.
     pub fn close_raw(&self, handle: NonNull<c_void>) -> Result<()> {
-        let _ = handle;
-        Err(Error::Unimplemented("dlclose"))
+        self.inner.gate.with(|| {
+            // SAFETY: a handle from dlopen, closed once.
+            match unsafe { (self.inner.dlclose)(handle.as_ptr()) } {
+                0 => Ok(()),
+                _ => Err(self.inner.last_error("dlclose failed")),
+            }
+        })
     }
 }
 
