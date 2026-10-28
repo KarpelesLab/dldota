@@ -3,6 +3,7 @@ use std::fmt;
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// No usable system dynamic loader was found.
     InterpreterNotFound,
