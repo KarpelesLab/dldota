@@ -41,7 +41,8 @@ fn cycle() {
             let input = corpus(1 << 20);
             let cctx = create();
             assert!(!cctx.is_null());
-            assert_eq!(set_param(cctx, 400 /* ZSTD_c_nbWorkers */, 2), 0);
+            // Returns the value set, or an error code (near usize::MAX).
+            assert!(set_param(cctx, 400 /* ZSTD_c_nbWorkers */, 2) < usize::MAX - 200);
             let mut out = vec![0u8; bound(input.len())];
             let n = compress2(
                 cctx,

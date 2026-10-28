@@ -33,7 +33,8 @@ fn unload_refused_while_foreign_threads_run() {
                 unsafe extern "C" fn(*mut c_void, *mut u8, usize, *const u8, usize) -> usize,
             >(&zstd, c"ZSTD_compress2");
             let cctx = create();
-            assert_eq!(set_param(cctx, 400 /* ZSTD_c_nbWorkers */, 2), 0);
+            // Returns the value set, or an error code (near usize::MAX).
+            assert!(set_param(cctx, 400 /* ZSTD_c_nbWorkers */, 2) < usize::MAX - 200);
             let input = corpus(1 << 20);
             let mut out = vec![0u8; bound(input.len())];
             assert!(
