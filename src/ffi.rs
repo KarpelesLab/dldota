@@ -175,6 +175,23 @@ pub unsafe extern "C" fn dldota_callback(ctx: *mut DldotaCtx, func: *mut c_void)
     ok_or_null(unsafe { &*ctx }.callback_raw(func))
 }
 
+/// Wrap the foreign function `func`, which foreign code returned at run time
+/// (e.g. from `vkGetInstanceProcAddr`) instead of exporting it, so host code
+/// can call it. Pointers from `dldota_sym` don't need this and are returned
+/// unchanged. Returns NULL on failure.
+///
+/// # Safety
+/// `ctx` must be valid and `func` a function in foreign code.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dldota_foreign(ctx: *mut DldotaCtx, func: *mut c_void) -> *mut c_void {
+    let Some(func) = NonNull::new(func) else {
+        set_error(Error::Dl("NULL function".into()));
+        return ptr::null_mut();
+    };
+    // SAFETY: caller contract.
+    ok_or_null(unsafe { &*ctx }.foreign_raw(func))
+}
+
 /// Release a thunk from `dldota_callback`. Foreign code must no longer hold it.
 ///
 /// # Safety

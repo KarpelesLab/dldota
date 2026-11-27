@@ -52,6 +52,12 @@ int dldota_close(dldota_ctx *ctx, void *handle);
 void *dldota_callback(dldota_ctx *ctx, void *func);
 void dldota_callback_free(dldota_ctx *ctx, void *thunk);
 
+/* Wrap a foreign function that foreign code returned at run time (e.g. from
+ * vkGetInstanceProcAddr or eglGetProcAddress) so the host can call it: the
+ * returned pointer switches the thread pointer around the call. Pointers from
+ * dldota_sym() don't need this and come back unchanged. NULL on error. */
+void *dldota_foreign(dldota_ctx *ctx, void *func);
+
 /* Last error on the calling thread, or NULL. Reading clears it. */
 const char *dldota_error(void);
 

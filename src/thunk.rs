@@ -56,6 +56,13 @@ impl Thunks {
             .filter(|r| r.0 != 0)
     }
 
+    /// Whether `addr` is one of our thunks.
+    pub(crate) fn contains(&self, addr: usize) -> bool {
+        self.chunks
+            .iter()
+            .any(|c| (c.rx..c.rx + CHUNK).contains(&addr))
+    }
+
     fn get(&mut self, gate: &Gate, target: usize, tramp: usize) -> io::Result<usize> {
         if let Some(&thunk) = self.cache.get(&(target, tramp)) {
             return Ok(thunk);

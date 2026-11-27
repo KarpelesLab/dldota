@@ -271,6 +271,41 @@ impl Context {
         Ok(NonNull::new(thunk as *mut c_void).expect("thunk address"))
     }
 
+    /// Wrap a foreign function that was not looked up by name, so the host can
+    /// call it: one that foreign code returned at run time
+    /// (`vkGetInstanceProcAddr`, `eglGetProcAddress`) or stored in a struct or
+    /// vtable. The returned pointer switches the thread pointer around the
+    /// call, like a [`Library::symbol`] result. It stays valid until the
+    /// context is unloaded; using it once the library that owns `f` is closed
+    /// is undefined behaviour.
+    ///
+    /// A pointer that already switches the thread pointer (from
+    /// [`Library::symbol`] or this method) is returned unchanged.
+    ///
+    /// # Safety
+    /// `F` must be a function pointer type, and `f` a function in foreign
+    /// code with that signature.
+    pub unsafe fn foreign<F: Copy>(&self, f: F) -> Result<F> {
+        const { assert!(size_of::<F>() == size_of::<*mut c_void>()) };
+        // SAFETY: size checked above; F is a function pointer per the contract.
+        let raw = unsafe { std::mem::transmute_copy::<F, NonNull<c_void>>(&f) };
+        let thunk = self.foreign_raw(raw)?;
+        // SAFETY: the thunk has the same ABI and signature as `f`.
+        Ok(unsafe { std::mem::transmute_copy::<NonNull<c_void>, F>(&thunk) })
+    }
+
+    /// Create (or reuse) the outbound thunk for the foreign code address
+    /// `f`: the counterpart of [`Context::callback_raw`]. See
+    /// [`Context::foreign`].
+    pub fn foreign_raw(&self, f: NonNull<c_void>) -> Result<NonNull<c_void>> {
+        let mut thunks = self.inner.thunks.lock().unwrap_or_else(|e| e.into_inner());
+        if thunks.contains(f.as_ptr() as usize) {
+            return Ok(f);
+        }
+        let thunk = thunks.outbound(self.inner.gate, f.as_ptr() as usize)?;
+        Ok(NonNull::new(thunk as *mut c_void).expect("thunk address"))
+    }
+
     /// Release a thunk created by [`Context::callback_raw`].
     pub fn free_callback_raw(&self, thunk: NonNull<c_void>) {
         let _ = thunk;
