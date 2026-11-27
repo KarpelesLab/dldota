@@ -7,7 +7,7 @@ use std::ptr::NonNull;
 use std::sync::Mutex;
 
 use crate::error::{Error, Result};
-use crate::gate::Gate;
+use crate::gate::{Gate, PthreadFns};
 use crate::heap::{self, HeapUsage};
 use crate::loader;
 use crate::runtime::{self, Runtime};
@@ -145,8 +145,10 @@ pub(crate) struct Inner {
 
 impl Inner {
     /// Look up libc functions the runtime needs: the real `pthread_create`
-    /// (called raw, from foreign code) and `fflush` (for unload).
+    /// (called raw, from foreign code), `fflush` (for unload), and what the
+    /// gate needs to give each host thread a foreign thread.
     fn resolve_libc(&mut self) {
+        let mut pthread = PthreadFns::default();
         // glibc < 2.34 keeps pthread_create in libpthread; musl answers both.
         for lib in [c"libc.so.6", c"libpthread.so.0"] {
             // SAFETY: valid C strings; NOLOAD only finds loaded objects.
@@ -161,6 +163,17 @@ impl Inner {
                 if !create.is_null() {
                     self.rt.set_pthread_create(create as usize);
                 }
+                for (slot, name) in [
+                    (&mut pthread.create, c"pthread_create"),
+                    (&mut pthread.join, c"pthread_join"),
+                    (&mut pthread.key_create, c"pthread_key_create"),
+                    (&mut pthread.setspecific, c"pthread_setspecific"),
+                    (&mut pthread.getspecific, c"pthread_getspecific"),
+                ] {
+                    if *slot == 0 {
+                        *slot = (self.dlsym)(handle, name.as_ptr()) as usize;
+                    }
+                }
                 let fflush = (self.dlsym)(handle, c"fflush".as_ptr());
                 if self.fflush.is_none() && !fflush.is_null() {
                     let mut thunks = self.thunks.lock().unwrap_or_else(|e| e.into_inner());
@@ -174,10 +187,13 @@ impl Inner {
                 (self.dlclose)(handle);
             }
         }
+        let mut thunks = self.thunks.lock().unwrap_or_else(|e| e.into_inner());
+        self.gate
+            .enable_threads(&pthread, |f| thunks.outbound(self.gate, f));
     }
 
-    /// The foreign `dlerror()` text. Call with the gate held, right after the
-    /// failing call, so no other thread's error replaces it.
+    /// The foreign `dlerror()` text. Call inside `Gate::with`, right after
+    /// the failing call, so no other thread's error replaces it.
     fn last_error(&self, fallback: &str) -> Error {
         // SAFETY: dlerror returns NULL or a NUL-terminated string.
         let msg = unsafe { (self.dlerror)() };

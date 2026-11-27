@@ -13,8 +13,10 @@ into the process, boots it as the kernel would, and exposes its
 thread pointer, so the host runtime and the system libc can coexist.
 
 Status: working on x86_64 (glibc and musl systems): boot, `dlopen`/`dlsym`,
-calls and callbacks with thread-pointer switching, a per-context heap that
-serves every foreign allocation, and unload. aarch64 is not implemented yet.
+calls and callbacks with thread-pointer switching, a foreign thread per host
+thread (so host threads call foreign code concurrently, each with its own
+`errno` and thread-local data), a per-context heap that serves every foreign
+allocation, and unload. aarch64 is not implemented yet.
 See [docs/design.md](docs/design.md).
 
 - Rust: `dldota::Context`

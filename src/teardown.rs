@@ -1,11 +1,15 @@
 //! Unloading a context: run the foreign world's destructors, then unmap it.
 
 use std::ffi::c_void;
+use std::time::{Duration, Instant};
 
 use crate::context::Inner;
 use crate::error::{Error, Result};
 use crate::loader::{self, Flavor, LoadedObject};
 use crate::sys;
+
+/// How long unload waits for threads that may be about to disappear.
+const JOIN_GRACE: Duration = Duration::from_millis(100);
 
 const DT_NULL: usize = 0;
 const DT_FINI: usize = 13;
@@ -18,8 +22,11 @@ impl Inner {
     /// afterwards, on success.
     pub(crate) unsafe fn unload(&self) -> Result<()> {
         self.gate.acquire();
-        // SAFETY: forwarded; the gate keeps host threads out of foreign code.
+        // SAFETY: forwarded.
         let r = unsafe { self.teardown() };
+        if r.is_err() {
+            self.gate.reopen();
+        }
         self.gate.release();
         r
     }
@@ -38,10 +45,26 @@ impl Inner {
     }
 
     unsafe fn teardown(&self) -> Result<()> {
-        let live = self.rt.live_threads();
+        // A thread that foreign code just joined can still exist for a moment:
+        // `pthread_join` returns when the kernel clears its tid, slightly
+        // before the task is gone.
+        let mut live = self.rt.live_threads();
+        let deadline = Instant::now() + JOIN_GRACE;
+        while live > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+            live = self.rt.live_threads();
+        }
         if live > 0 {
             return Err(Error::Busy(format!(
                 "{live} thread(s) created by foreign code still running"
+            )));
+        }
+        // The host threads' foreign threads exit first, running their
+        // thread-local destructors. From here on this thread's foreign calls
+        // run on the bootstrap TCB, like a main thread's exit handlers.
+        if let Err(stuck) = self.gate.close_threads() {
+            return Err(Error::Busy(format!(
+                "{stuck} foreign thread(s) of host threads did not exit"
             )));
         }
         let booted = &self.booted;
@@ -78,7 +101,7 @@ impl Inner {
         restore_signals(&booted.signals, &spans);
 
         // SAFETY: nothing runs foreign code anymore: no live foreign threads,
-        // the gate is held, and the Context is being consumed.
+        // and the Context is being consumed.
         unsafe {
             for &(start, len) in &spans {
                 let _ = sys::munmap(start, len);

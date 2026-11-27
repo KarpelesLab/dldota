@@ -281,8 +281,10 @@ core::arch::global_asm!(
     "ret",
 
     // Foreign -> host (callbacks). Entered from a thunk: r11 = host function,
-    // r10 = gate, TP = foreign. Only threads borrowing the gate's TCB have a
-    // host TCB to return to.
+    // r10 = gate, TP = foreign. The host thread pointer to switch to is the
+    // first word of the record the foreign thread holds under the gate's
+    // thread-specific key: a donor's, or the gate's `cur_host_tp` for the
+    // bootstrap TCB. Threads created by foreign code have none.
     ".p2align 4",
     ".globl __dldota_x86_64_tramp_in",
     ".hidden __dldota_x86_64_tramp_in",
@@ -291,9 +293,20 @@ core::arch::global_asm!(
     save_args!(),
     "mov rax, qword ptr fs:[0]",
     "mov [rsp + 200], rax",
+    "mov rdx, [r10 + 16]",     // gate.getspecific
+    "test rdx, rdx",
+    "jz 8f",
+    "mov edi, [r10 + 24]",     // gate.key
+    "call rdx",                // -> rax = this thread's record
+    "test rax, rax",
+    "jz 5f",
+    "jmp 9f",
+    "8:",                      // no donors: only the bootstrap TCB has a host
     "cmp rax, [r10]",          // gate.boot_tp
     "jne 5f",
-    "mov rsi, [r10 + 8]",      // gate.cur_host_tp
+    "lea rax, [r10 + 8]",      // gate.cur_host_tp
+    "9:",
+    "mov rsi, [rax]",          // host TP
     set_fs_rsi!(),
     "mov rdi, [rsp + 56]",     // gate (saved r10)
     "mov rsi, [rsp + 216]",    // return address
@@ -332,7 +345,7 @@ core::arch::global_asm!(
     "syscall",
     "ud2",
     "6:",
-    ".ascii \"dldota: callback called on a thread created by foreign code (not supported yet)\\n\"",
+    ".ascii \"dldota: callback called on a thread that has no host thread (created by foreign code, or exiting)\\n\"",
     "7:",
     ".popsection",
 

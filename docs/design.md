@@ -138,15 +138,36 @@ switch TP**, in both directions:
 
 There is one foreign TCB after bootstrap, belonging to the bootstrap thread.
 Using it concurrently from several host threads corrupts glibc state (errno,
-tcache, `dlerror`, locale). Options:
+tcache, `dlerror`, locale), and sharing it one thread at a time still breaks
+libraries that remember which thread owns something (libpulse's mainloop
+lock, a GL context's current thread, anything in `__thread` variables).
 
-- **(MVP)** a per-context lock: one host thread inside foreign code at a time,
-  all of them borrowing the bootstrap TCB. The lock must be re-entrant,
-  because a callback can call back into foreign code (host → foreign → host →
-  foreign, see `tests/callbacks.rs`).
-- **(Later)** a foreign TCB per host thread. Lazily `pthread_create` a parked
-  foreign thread through the *foreign* libc and borrow its TCB. Caveat: the TCB's
-  `tid` is the parked thread's, which matters for PI/robust mutexes only.
+So **each host thread gets a foreign thread of its own** (`src/gate.rs`). The
+first time a host thread enters foreign code, the foreign libc's
+`pthread_create` makes a thread that records its thread pointer and parks on a
+futex (a *donor*). The host thread then runs foreign code with the donor's
+thread pointer: its own `pthread_self`, `errno`, `dlerror` and TLS block.
+Host threads run foreign code concurrently; nothing is serialized.
+
+- The donor exits when its host thread does (a host thread-local destructor
+  wakes it), so foreign thread-local destructors run. It is joined later, the
+  next time a donor is created or at unload: only then does the foreign libc
+  free its stack.
+- Donors are created with every signal blocked except glibc's internal ones
+  (32-34): a host signal handler must never run on a thread with no host TCB.
+- A callback finds the host thread pointer to switch to through a foreign
+  thread-specific key (`pthread_getspecific`) whose value is the donor's
+  record.
+- The bootstrap TCB is only borrowed, under a re-entrant lock: to create and
+  join donors, and to run exit handlers at unload. It is also the fallback for
+  every call (one host thread at a time, as before) if the libc lacks the
+  `pthread_*` functions or a donor can't be created.
+- Caveats: the TCB's `tid` is the parked thread's, not the caller's. That is
+  consistent for ordinary mutex ownership, but wrong for PI/robust mutexes
+  (the kernel checks it) and for `raise`/`pthread_kill(pthread_self())`, which
+  signal the parked thread. `pthread_getattr_np` describes the donor's stack,
+  not the one the host thread runs on. Each donor costs a kernel thread and a
+  default-sized (lazily committed) stack.
 
 Threads created *by* foreign libraries run foreign code with a foreign TCB, which
 is fine. If they call back into host code, though, there is no host TCB. Rust
@@ -230,6 +251,8 @@ world down. On failure the caller gets the context back intact.
 2. Refuse with `Error::Busy` if a thread created through the interposed
    `pthread_create` is still alive (checked against `/proc/self/task`): its code
    would be unmapped under it, and a single thread can't be killed safely.
+   Then make the host threads' foreign threads (see [Threads](#2-threads))
+   exit and join them. The steps below run on the bootstrap TCB.
 3. `fflush(NULL)` in the foreign libc.
 4. Run the exit-handler list we own (`__cxa_atexit`/`atexit`), newest first.
    Then run library finalizers: on glibc, the `_dl_fini` that `ld.so` passes to
